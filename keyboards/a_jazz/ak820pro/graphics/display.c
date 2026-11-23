@@ -155,6 +155,15 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
 
 // Bottom row: y position of the wireless status line.
 #define STATUS_Y (display_layout.status_y)
+/* The bands' columns (free placement): at x 0, width 128, today's. */
+#define TEXT_BX   ((uint16_t)display_layout.text_x)
+#define TEXT_BW   ((uint16_t)display_layout.text_w)
+#define CLOCK_BX  ((uint16_t)display_layout.clock_x)
+#define CLOCK_BW  ((uint16_t)display_layout.clock_w)
+#define LOCK_BX   ((uint16_t)display_layout.lock_x)
+#define LOCK_BW   ((uint16_t)display_layout.lock_w)
+#define STATUS_BX ((uint16_t)display_layout.status_x)
+#define STATUS_BW ((uint16_t)display_layout.status_w)
 
 /* volatile: read every GPT tick in ISR context (display_backlight_tick),
  * written from the main loop -- same discipline as bkl_level/ind_*. Benign
@@ -677,7 +686,7 @@ static void draw_ampm(uint16_t x, uint16_t y, bool pm) {
  * it relayouts through the diff path (clock_relayout). band_clear only knows
  * the glyph queue's runs, so the AM/PM shadow is reset here, with the pixels. */
 static void clock_band_clear(void) {
-    band_clear(0, CLOCK_Y, PANEL_WIDTH, CLOCK_BAND_H);
+    band_clear(CLOCK_BX, CLOCK_Y, CLOCK_BW, CLOCK_BAND_H);
     ampm.shown = false;
 }
 
@@ -716,10 +725,12 @@ static void draw_playback(void) {
      * too wide for the panel, which only happens once a duration reaches an
      * hour. A 20px cell is 23 rows against this band's 22, so it borrows one
      * row from the 4-row gap below -- covered by the band clear. */
-    bool     big  = (n * FONT_STATUS_ADV) <= PANEL_WIDTH;
+    bool     big  = (n * FONT_STATUS_ADV) <= CLOCK_BW;
     uint16_t font = big ? FONT_STATUS : FONT_SMALL;
     uint8_t  adv  = big ? FONT_STATUS_ADV : FONT_SMALL_ADV;
-    uint16_t x0   = (uint16_t)((PANEL_WIDTH - n * adv) / 2);
+    /* A band too narrow even for the small face: queue_line cuts the run at
+     * the band's edge, so the left of it shows. */
+    uint16_t x0   = (uint16_t)(CLOCK_BX + (n * adv < CLOCK_BW ? (CLOCK_BW - n * adv) / 2 : 0));
     uint16_t y    = big ? CLOCK_Y : (CLOCK_Y + 4);
 
     /* Ownership change (clock <-> playback): clear the whole band through
@@ -1272,13 +1283,18 @@ void draw_clock(void) {
         uint8_t  dn  = (uint8_t)strlen(date_str);
         if (dn > 12) dn = 12;
         date_str[dn] = '\0';
-        uint16_t dx0 = (uint16_t)((PANEL_WIDTH - dn * FONT_STATUS_ADV) / 2);
+        /* The 20px face, or the small one in a band too narrow for it. */
+        bool     dbig  = dn * FONT_STATUS_ADV <= CLOCK_BW;
+        uint16_t dfont = dbig ? FONT_STATUS : FONT_SMALL;
+        uint16_t dadv  = dbig ? FONT_STATUS_ADV : FONT_SMALL_ADV;
+        uint16_t dy    = (uint16_t)(dbig ? CLOCK_Y : CLOCK_Y + 4);
+        uint16_t dx0   = (uint16_t)(CLOCK_BX + (dn * dadv < CLOCK_BW ? (CLOCK_BW - dn * dadv) / 2 : 0));
         if (ampm.shown) {   /* leaving 12h: the glyph cell is outside any run */
             band_clear(ampm.x, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
             ampm.shown = false;
         }
-        if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, FONT_STATUS, dx0, CLOCK_Y);
-        queue_line(GQ_SLOT_CLOCK, FONT_STATUS, dx0, CLOCK_Y, date_str);
+        if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, dfont, dx0, dy);
+        queue_line(GQ_SLOT_CLOCK, dfont, dx0, dy, date_str);
         return;
     }
 
@@ -1305,12 +1321,24 @@ void draw_clock(void) {
      * old last_time[] compare did, and a force repaint (band_clear above
      * invalidated the shadow) queues all 8 -- painted by the pump at main-
      * loop rate instead of ~16 ms of blocking waits. */
-    uint16_t adv = lcd_font_advance(FONT_CLOCK);
+    /* The face: the clock's own, unless the band is too narrow for this
+     * mode's widest time (8 cells with seconds, 5 without, and the AM/PM
+     * glyph), then the 20px face, then the small one 4 rows down. Chosen by
+     * the widest, so the face never changes at 9:59 -> 10:00. */
+    uint8_t  nmax  = secs ? 8u : 5u;
+    uint16_t extra = twelve ? AMPM_W : 0;
+    uint16_t cfont = FONT_CLOCK;
+    uint16_t cy    = CLOCK_Y;
+    if (nmax * lcd_font_advance(FONT_CLOCK) + extra > CLOCK_BW) {
+        cfont = (nmax * FONT_STATUS_ADV + extra <= CLOCK_BW) ? FONT_STATUS : FONT_SMALL;
+        if (cfont == FONT_SMALL) cy = (uint16_t)(CLOCK_Y + 4);
+    }
+    uint16_t adv = lcd_font_advance(cfont);
     if (!adv) return;
     uint8_t  n  = (uint8_t)strlen(time_str);   // 8/7 (with seconds) or 5/4
-    uint16_t w  = (uint16_t)(n * adv + (twelve ? AMPM_W : 0));
-    uint16_t x0 = (uint16_t)((PANEL_WIDTH - w) / 2);
-    if (twelve) x0 = (x0 > AMPM_X_SHIFT) ? (uint16_t)(x0 - AMPM_X_SHIFT) : 0;
+    uint16_t w  = (uint16_t)(n * adv + extra);
+    uint16_t x0 = (uint16_t)(CLOCK_BX + (w < CLOCK_BW ? (CLOCK_BW - w) / 2 : 0));
+    if (twelve) x0 = (x0 > CLOCK_BX + AMPM_X_SHIFT) ? (uint16_t)(x0 - AMPM_X_SHIFT) : CLOCK_BX;
     uint16_t ax = (uint16_t)(x0 + n * adv);   // AM/PM cell origin: the run's end
 
     /* Retire a stale AM/PM glyph BEFORE the run is re-laid: when the run
@@ -1327,8 +1355,8 @@ void draw_clock(void) {
     }
     /* After a whole-band clear the slot is KNOWN EMPTY at this layout; saying
      * so spares queue_line's unknown-path full-width clear (~8 ms). */
-    if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, FONT_CLOCK, x0, CLOCK_Y);
-    queue_line(GQ_SLOT_CLOCK, FONT_CLOCK, x0, CLOCK_Y, time_str);
+    if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, cfont, x0, cy);
+    queue_line(GQ_SLOT_CLOCK, cfont, x0, cy, time_str);
     if (twelve && !ampm.shown) {
         /* The cell may hold the tail of the run's OLD layout (24h -> 12h
          * shifts the digits left, off the glyph's columns). Clear it AFTER
@@ -1581,7 +1609,7 @@ static void draw_conn_number(bool force) {
 
 // Battery icon, bottom-left. Body + terminal nub, with a proportional fill.
 // Geometry is inclusive coordinates (lcd_fill_rect takes x0,y0,x1,y1).
-#define BATT_X0    5   /* was 2: the LCD is recessed, so the bezel clips the outermost pixels */
+#define BATT_X0    (STATUS_BX + 5)   /* was 2: the LCD is recessed, so the bezel clips the outermost pixels */
 /* +4, not +3: rows 126-127 were dead space below the icon, which read as the
  * battery row floating. LCD_OFF_Y is a controller offset, not lost rows, so the
  * full 0..127 is visible. One row of bottom margin is kept deliberately -- the
@@ -1725,7 +1753,8 @@ static bool    batt_painted_this_pass = false;
  * 7 cells of the 10 px face. An 8-cell text (BATT_TEXT_MAX: Both's "99% 160h")
  * closes its space to BATT_TXT_THIN px: 74 px, its first glyph 3 px clear of
  * the bulb (JD, 10-26). */
-#define BATT_TXT_ROOM    (PANEL_WIDTH - 4 - (BOLT_X + ICON_SLOT_W))
+#define BATT_TXT_RIGHT   (STATUS_BX + STATUS_BW - 4)   /* the text's right edge: the bezel's margin at full width */
+#define BATT_TXT_ROOM    (BATT_TXT_RIGHT > BOLT_X + ICON_SLOT_W ? BATT_TXT_RIGHT - (BOLT_X + ICON_SLOT_W) : 0)
 #define BATT_TXT_THIN    4
 static uint8_t batt_last_bulb = SLOT_NO_BULB;   /* the mode's bulb draw_battery() last wanted */
 
@@ -1810,6 +1839,18 @@ static void draw_battery(bool force) {
     // -- the level alone is not enough. Same for presence: it owns the same rect
     // as the bolt and suppresses the number.
     if (absent) snprintf(txt, sizeof(txt), "No Batt");
+    /* A row narrower than the panel: a text too wide for its room keeps its
+     * first word ("85% 160h" -> "85%"), and one still too wide is left out,
+     * the bar alone showing the level. At full width every text fits. */
+    {
+        uint16_t adv = lcd_font_advance(FONT_STATUS);
+        char    *sp  = strchr(txt, ' ');
+        uint16_t room = (uint16_t)BATT_TXT_ROOM;
+        if (adv && (uint16_t)(strlen(txt) * adv - (sp && adv > BATT_TXT_THIN ? adv - BATT_TXT_THIN : 0u)) > room) {
+            if (sp) *sp = '\0';
+            if ((uint16_t)(strlen(txt) * adv) > room) txt[0] = '\0';
+        }
+    }
     bool same_txt = strcmp(txt, last_txt) == 0;
 
     /* ONE component per call (flash 2c). A plug-in changes the bolt, the text
@@ -1948,7 +1989,7 @@ static void draw_battery(bool force) {
         }
         if (!txt_placed) {
             uint16_t w     = (uint16_t)(n * adv - thin);
-            uint16_t x     = (uint16_t)(PANEL_WIDTH - 4 - w);
+            uint16_t x     = (uint16_t)(BATT_TXT_RIGHT - w);
             bool     clear = x > last_txt_x;
             if (clear)
                 lcd_clear_rect(last_txt_x, STATUS_Y, (uint16_t)(x - last_txt_x), lcd_font_height(FONT_STATUS));
@@ -2008,7 +2049,6 @@ static void draw_battery(bool force) {
 // for the only context where the feature is meaningful. The padlock conveys
 // "disabled"; the label says which key.
 #define LOCK_Y      (display_layout.lock_y)
-#define LOCK_PAD_X  4
 /* 16px padlock inside the 23px band -> LOCK_Y+3 .. LOCK_Y+18, which the clear
  * rect (STATUS_Y - LOCK_Y = 22 since 10-28) fully covers. It did NOT while the band was
  * 17px: the padlock ran to LOCK_Y+18 against a clear of LOCK_Y+16, leaving its
@@ -2027,9 +2067,17 @@ static void draw_battery(bool force) {
 _Static_assert(DL_PADLOCK_FITS(DL_DEF_LOCK_Y, DL_DEF_STATUS_Y), "lock band must contain the 16px padlock drawn at LOCK_Y+3");
 _Static_assert(DL_STATUS_FITS(DL_DEF_STATUS_Y), "battery band (20px face, 23-row cell) must fit the panel");
 _Static_assert(DL_CLOCK_ABOVE_LOCK(DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y), "clock band must not overlap the lock band");
-#define LOCK_CAP_X  20                    // "CAPS" 4 glyphs = 40px -> 20..59
-#define LOCK_WIN_X  64                    // "WIN"  3 glyphs = 30px -> 64..93
-#define LOCK_SLOT3_X 96                   // shared: "FN" 20px, "SCR" 30px -> 96..125
+/* The slots' columns from the band's x. A band narrower than LOCK_FULL_W
+ * draws the compact row: the small face, 4 rows down, the slots closer. */
+#define LOCK_FULL_W 126
+#define LOCK_COMPACT (LOCK_BW < LOCK_FULL_W)
+#define LOCK_PAD_X   (LOCK_BX + (LOCK_COMPACT ? 2u : 4u))
+#define LOCK_CAP_X   (LOCK_BX + (LOCK_COMPACT ? 18u : 20u))   // "CAPS" 4 glyphs = 40px -> 20..59 (compact 24px)
+#define LOCK_WIN_X   (LOCK_BX + (LOCK_COMPACT ? 45u : 64u))   // "WIN"  3 glyphs = 30px -> 64..93 (compact 18px)
+#define LOCK_SLOT3_X (LOCK_BX + (LOCK_COMPACT ? 66u : 96u))   // shared: "FN" 20px, "SCR" 30px -> 96..125 (compact 18px)
+#define LOCK_FONT    (LOCK_COMPACT ? FONT_SMALL : FONT_STATUS)
+#define LOCK_ADV     (LOCK_COMPACT ? FONT_SMALL_ADV : 10u)
+#define LOCK_TXT_Y   (LOCK_COMPACT ? (uint16_t)(LOCK_Y + 4) : (uint16_t)LOCK_Y)
 #define COL_PADLOCK 0xFFE0                // yellow
 
 extern bool lock_state_caps(void);        // ak820pro.c
@@ -2058,9 +2106,9 @@ static void draw_padlock(uint16_t x, uint16_t y, uint16_t col) {
 #define LOCK_PAD_W  13
 #define LOCK_PAD_H  16
 #define LOCK_TXT_H  23                    /* FONT_STATUS cell height */
-#define LOCK_CAP_W  40                    /* "CAPS" 4 glyphs @10px            */
-#define LOCK_WIN_W  30                    /* "WIN"  3 glyphs                  */
-#define LOCK_SL3_W  30                    /* "SCR" 3; covers "FN" shrinking   */
+#define LOCK_CAP_W  (4u * LOCK_ADV)       /* "CAPS" 4 glyphs @10px            */
+#define LOCK_WIN_W  (3u * LOCK_ADV)       /* "WIN"  3 glyphs                  */
+#define LOCK_SL3_W  (3u * LOCK_ADV)       /* "SCR" 3; covers "FN" shrinking   */
 /* draw_battery() no longer clears its whole strip, so nothing erases lock-band
  * pixels that stray below LOCK_Y + LOCK_TXT_H. Since 10-28 the lock cells
  * reach ONE row into the battery strip (83 + 23 = 106 against STATUS_Y 105),
@@ -2093,7 +2141,7 @@ static const char *shown_sl3 = NULL;
  * so the label follows its padlock within a few passes, never behind a
  * line of queued text. */
 #define LQ_MAX 10u
-static struct { uint16_t x; char c; } lq[LQ_MAX];   /* FONT_STATUS, at LOCK_Y */
+static struct { uint16_t x, y, font; char c; } lq[LQ_MAX];   /* the face and row the label was queued in */
 static uint8_t  lq_n = 0, lq_i = 0;
 static uint16_t lq_refused = 0;   /* labels refused for room: never expected */
 
@@ -2101,15 +2149,18 @@ static void lq_reset(void) { lq_n = lq_i = 0; }
 static bool lq_pending(void) { return lq_i < lq_n; }
 
 static bool lq_push_label(uint16_t x, const char *s) {
-    uint16_t adv = lcd_font_advance(FONT_STATUS);
-    uint8_t  n   = (uint8_t)strlen(s);
+    uint16_t font = LOCK_FONT;
+    uint16_t adv  = lcd_font_advance(font);
+    uint8_t  n    = (uint8_t)strlen(s);
     if (!adv || lq_n + n > LQ_MAX) {
         if (lq_refused < 0xFFFFu) lq_refused++;
         return false;
     }
     for (uint8_t i = 0; i < n; i++) {
-        lq[lq_n].x = (uint16_t)(x + i * adv);
-        lq[lq_n].c = s[i];
+        lq[lq_n].x    = (uint16_t)(x + i * adv);
+        lq[lq_n].y    = LOCK_TXT_Y;
+        lq[lq_n].font = font;
+        lq[lq_n].c    = s[i];
         lq_n++;
     }
     return true;
@@ -2120,7 +2171,7 @@ static bool lq_push_label(uint16_t x, const char *s) {
  * serves no queue. False if the queue had no room: nothing was queued. */
 static bool lock_label(uint16_t x, const char *s, bool queued) {
     if (queued) return lq_push_label(x, s);
-    lcd_draw_flash_text(FONT_STATUS, x, LOCK_Y, s);
+    lcd_draw_flash_text(LOCK_FONT, x, LOCK_TXT_Y, s);
     return true;
 }
 
@@ -2273,6 +2324,12 @@ _Static_assert(DL_TEXT_ABOVE_CLOCK(DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y), "and in the b
  * needs nothing resent. */
 #define TEXT_LINES 2
 static char     text_buf[TEXT_LINES][DISPLAY_TEXT_MAX + 1] = {{0}};
+/* A single line in the 20px face: at most TEXT_BIG_MAX cells, and they fit
+ * the band (at full width, every one of the eleven does). */
+static bool text_big_fits(void) {
+    uint16_t n = (uint16_t)strlen(text_buf[0]);
+    return n <= TEXT_BIG_MAX && TEXT_X + n * FONT_STATUS_ADV + 2u <= TEXT_BW;
+}
 static uint8_t  text_icon    = DISPLAY_ICON_NONE;
 static uint32_t text_stamp   = 0;
 static bool     text_present = false;
@@ -2927,6 +2984,13 @@ static bool rects_overlap(uint16_t ax, uint16_t ay, uint16_t aw, uint16_t ah,
     return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
 }
 
+/* A glyph queue slot's columns: its band's. The unknown path's clear and
+ * every run stop at them, so a band beside another never touches it. */
+static void slot_cols(uint8_t slot, uint16_t *x, uint16_t *w) {
+    if (slot == GQ_SLOT_CLOCK) { *x = CLOCK_BX; *w = CLOCK_BW; }
+    else                       { *x = TEXT_BX;  *w = TEXT_BW; }
+}
+
 /* EVERY clear in this band goes through here, and it is the invariant the whole
  * diffing scheme rests on: a shadow may only claim "already painted" for pixels
  * that are still on the panel.
@@ -2955,7 +3019,7 @@ static void band_clear(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     band_clears++;
 
     if (last_icon_drawn != DISPLAY_ICON_NONE &&
-        rects_overlap(x, y, w, h, 0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H))
+        rects_overlap(x, y, w, h, TEXT_BX, last_icon_y, TEXT_ICON_W, TEXT_ICON_H))
         icon_clobbered = true;
 
     for (uint8_t i = 0; i < GQ_RUNS; i++) {
@@ -3021,7 +3085,7 @@ static void pump_bus_busy(bool *blocked, uint32_t *since) {
  * pump_bus_busy() bounds it. */
 static void pump_one_queued(bool *blocked, uint32_t *since) {
     if (lq_pending()) {
-        if (!lcd_draw_flash_glyph_try(FONT_STATUS, lq[lq_i].c, lq[lq_i].x, LOCK_Y)) {
+        if (!lcd_draw_flash_glyph_try(lq[lq_i].font, lq[lq_i].c, lq[lq_i].x, lq[lq_i].y)) {
             pump_bus_busy(blocked, since);
             return;
         }
@@ -3204,6 +3268,12 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
 
     uint8_t n = (uint8_t)strlen(str);
     if (n > GQ_LINE_MAX) n = GQ_LINE_MAX;
+    /* Never past the band's right edge (a band narrower than the panel; at
+     * full width every caller's budget already fits). */
+    uint16_t bx, bw;
+    slot_cols(slot, &bx, &bw);
+    if (x >= bx + bw) n = 0;
+    else if (n * adv > bx + bw - x) n = (uint8_t)((bx + bw - x) / adv);
 
     /* Two distinct non-diffable states, and conflating them was a real bug:
      *
@@ -3248,7 +3318,7 @@ static void queue_line(uint8_t slot, uint16_t font, uint16_t x, uint16_t y,
             }
         }
     } else if (unknown) {
-        band_clear(0, y, PANEL_WIDTH, h);
+        band_clear(bx, y, bw, h);
     }
 
     bool dropped = false;
@@ -3314,7 +3384,9 @@ static void retire_line(uint8_t slot) {
     if (!shadow[slot].valid) {
         /* A line that lost a glyph may be partly up: clear its whole row. */
         uint16_t dh = lcd_font_height(shadow[slot].font);
-        if (shadow[slot].dropped && dh) band_clear(0, shadow[slot].y, PANEL_WIDTH, dh);
+        uint16_t bx, bw;
+        slot_cols(slot, &bx, &bw);
+        if (shadow[slot].dropped && dh) band_clear(bx, shadow[slot].y, bw, dh);
         shadow[slot].dropped = false;
         return;
     }
@@ -3387,15 +3459,15 @@ static void text_line_step(uint8_t line) {
     if ((lay == TS_STATUS && !conn_status_str) || ((lay == TS_TWO || lay == TS_ONE) && !text_present)) lay = TS_NONE;
     if (line == 0) band_mark_painted(lay == TS_STATUS ? conn_status_kind : lay == TS_NONE ? BAND_NONE : BAND_TEXT);
     if (lay == TS_STATUS) {
-        if (line == 0) queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
+        if (line == 0) queue_line(0, FONT_STATUS, TEXT_BX + CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
         else retire_line(1);
     } else if (lay == TS_TWO) {
-        if (line == 0) queue_text_line(0, TEXT_X, TEXT_Y);
-        else queue_text_line(1, TEXT_X2, TEXT_Y + TEXT_LINE_H);
+        if (line == 0) queue_text_line(0, TEXT_BX + TEXT_X, TEXT_Y);
+        else queue_text_line(1, TEXT_BX + TEXT_X2, TEXT_Y + TEXT_LINE_H);
     } else if (lay == TS_ONE) {
         if (line == 0) {
-            if (strlen(text_buf[0]) <= TEXT_BIG_MAX) queue_line(0, FONT_STATUS, TEXT_X, TEXT_Y + TEXT_BIG_DY, text_buf[0]);
-            else queue_text_line(0, TEXT_X, TEXT_Y + TEXT_FONT_DY);
+            if (text_big_fits()) queue_line(0, FONT_STATUS, TEXT_BX + TEXT_X, TEXT_Y + TEXT_BIG_DY, text_buf[0]);
+            else queue_text_line(0, TEXT_BX + TEXT_X, TEXT_Y + TEXT_FONT_DY);
         } else retire_line(1);
     } else {
         retire_line(line);
@@ -3413,7 +3485,7 @@ static void text_slot_steps(void) {
         switch (ts_step) {
             case TS_ICON_CLEAR:
                 if (moved && last_icon_drawn != DISPLAY_ICON_NONE) {
-                    band_clear(0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H);
+                    band_clear(TEXT_BX, last_icon_y, TEXT_ICON_W, TEXT_ICON_H);
                     heavy = true;
                 }
                 ts_step = TS_ICON_DRAW;
@@ -3421,7 +3493,7 @@ static void text_slot_steps(void) {
             case TS_ICON_DRAW:
                 if (moved) {
                     if (ts_icon != DISPLAY_ICON_NONE) {
-                        draw_text_icon(0, ts_icon_y, ts_icon);
+                        draw_text_icon(TEXT_BX, ts_icon_y, ts_icon);
                         heavy = true;
                     }
                     last_icon_drawn = ts_icon;
@@ -3443,7 +3515,7 @@ static void text_slot_steps(void) {
             case TS_ICON_FIX:
                 /* Repaint the icon if a text clear reached into it. */
                 if (icon_clobbered && ts_icon != DISPLAY_ICON_NONE && last_icon_drawn == ts_icon) {
-                    draw_text_icon(0, ts_icon_y, ts_icon);
+                    draw_text_icon(TEXT_BX, ts_icon_y, ts_icon);
                     heavy = true;
                 }
                 ts_step = TS_IDLE;
@@ -3509,7 +3581,7 @@ static void draw_text_slot(bool force) {
          * rounded up, leaving the icon 0.5px high -- the direction optical
          * centring prefers, and the only alternative is 0.5px low. */
         if (text_buf[1][0])                       icon_y = TEXT_Y;
-        else if (strlen(text_buf[0]) <= TEXT_BIG_MAX)
+        else if (text_big_fits())
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
         else                                      icon_y = TEXT_Y + TEXT_FONT_DY;
     }
@@ -3529,8 +3601,8 @@ static void draw_text_slot(bool force) {
          * full gutter for the whole band height, which reached down into
          * line 1 and took its first two glyphs with it. */
         if (last_icon_drawn != DISPLAY_ICON_NONE)
-            band_clear(0, last_icon_y, TEXT_ICON_W, TEXT_ICON_H);
-        if (want_icon != DISPLAY_ICON_NONE) draw_text_icon(0, icon_y, want_icon);
+            band_clear(TEXT_BX, last_icon_y, TEXT_ICON_W, TEXT_ICON_H);
+        if (want_icon != DISPLAY_ICON_NONE) draw_text_icon(TEXT_BX, icon_y, want_icon);
         last_icon_drawn = want_icon;
         last_icon_y     = icon_y;
         icon_clobbered  = false;   /* just painted it; only LATER clears matter */
@@ -3539,14 +3611,14 @@ static void draw_text_slot(bool force) {
     /* --- text ------------------------------------------------------------- */
     band_mark_painted(conn_status_str ? conn_status_kind : text_present ? BAND_TEXT : BAND_NONE);
     if (conn_status_str) {
-        queue_line(0, FONT_STATUS, CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
+        queue_line(0, FONT_STATUS, TEXT_BX + CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
         retire_line(1);
     } else if (text_present && text_buf[1][0]) {
-        queue_text_line(0, TEXT_X,  TEXT_Y);
-        queue_text_line(1, TEXT_X2, TEXT_Y + TEXT_LINE_H);
+        queue_text_line(0, TEXT_BX + TEXT_X,  TEXT_Y);
+        queue_text_line(1, TEXT_BX + TEXT_X2, TEXT_Y + TEXT_LINE_H);
     } else if (text_present && text_buf[0][0]) {
-        if (strlen(text_buf[0]) <= TEXT_BIG_MAX) queue_line(0, FONT_STATUS, TEXT_X, TEXT_Y + TEXT_BIG_DY, text_buf[0]);
-        else queue_text_line(0, TEXT_X, TEXT_Y + TEXT_FONT_DY);
+        if (text_big_fits()) queue_line(0, FONT_STATUS, TEXT_BX + TEXT_X, TEXT_Y + TEXT_BIG_DY, text_buf[0]);
+        else queue_text_line(0, TEXT_BX + TEXT_X, TEXT_Y + TEXT_FONT_DY);
         retire_line(1);
     } else {
         retire_line(0);
@@ -3557,7 +3629,7 @@ static void draw_text_slot(bool force) {
      * only on a transition that is already repainting -- in the steady state
      * nothing clears the gutter and this never fires. */
     if (icon_clobbered && want_icon != DISPLAY_ICON_NONE)
-        draw_text_icon(0, icon_y, want_icon);
+        draw_text_icon(TEXT_BX, icon_y, want_icon);
 }
 
 /* Clock-sync plan 3.9: on an RTC second edge, run ONE extra pass of the
@@ -3955,35 +4027,53 @@ display_layout_t display_layout = DISPLAY_LAYOUT_DEFAULT;
  * stacking this phase keeps: the OS logo and the transport strip above the
  * text band, then the clock, the lock row and the battery row in that order.
  * A later phase may relax the order; it must not relax a fit. */
+/* The free placement's rules (Manuel, 11-23): every element on the panel,
+ * each band at least its minimum width, and no two visible elements
+ * overlapping, in any order. The one overlap allowed is the one today's
+ * dashboard has: the lock row's last row on the battery row's first, both
+ * blank by construction (DL_LOCK_CELLS_FIT's measurement). */
 bool display_layout_valid(const display_layout_t *l) {
     if (!l) return false;
     if (l->hidden & (uint8_t)~DL_HIDE_MASK) return false;
-    if (l->os_x + 24u > PANEL_WIDTH || l->os_y + 24u > PANEL_HEIGHT) return false;
-    if (l->conn_x + CONN_ICON_W + 1u + CONN_NUM_W + 1u > PANEL_WIDTH) return false;
-    if (l->conn_y + CONN_ICON_H > PANEL_HEIGHT) return false;
-    if (l->os_y + 24u > l->text_y || l->conn_y + CONN_ICON_H > l->text_y) return false;
-    /* Side by side, the logo and the strip (with its digit) must not meet. */
-    bool rows_meet = l->os_y < l->conn_y + CONN_ICON_H && l->conn_y < l->os_y + 24u;
-    bool cols_meet = l->os_x < l->conn_x + CONN_ICON_W + 1u + CONN_NUM_W + 1u && l->conn_x < l->os_x + 24u;
-    if (rows_meet && cols_meet) return false;
-    if (!DL_TEXT_ON_PANEL(l->text_y) || !DL_TEXT_ABOVE_CLOCK(l->text_y, l->clock_y)) return false;
-    if (!DL_CLOCK_ABOVE_LOCK(l->clock_y, l->lock_y)) return false;
-    if (l->status_y < l->lock_y || !DL_PADLOCK_FITS(l->lock_y, l->status_y)) return false;
-    if (!DL_STATUS_FITS(l->status_y)) return false;
-    if (!DL_LOCK_CELLS_FIT(l->lock_y, l->status_y) || !DL_LOCK_INK_FITS(l->lock_y, l->status_y)) return false;
+    if (l->text_w < DL_TEXT_MIN_W || l->clock_w < DL_CLOCK_MIN_W || l->lock_w < DL_LOCK_MIN_W || l->status_w < DL_STATUS_MIN_W)
+        return false;
+    uint8_t x[6], y[6], w[6], h[6];
+    bool    on[6];
+    for (uint8_t i = 0; i < 6; i++) {
+        on[i] = display_layout_rect(l, i, &x[i], &y[i], &w[i], &h[i]);
+        /* Hidden elements are checked too: a layout that shows one later
+         * through a reload is a new layout, checked again, but nothing out
+         * of range is ever kept. */
+        if (!on[i]) {
+            display_layout_t v = *l;
+            v.hidden = 0;
+            (void)display_layout_rect(&v, i, &x[i], &y[i], &w[i], &h[i]);
+        }
+        if ((uint16_t)x[i] + w[i] > PANEL_WIDTH || (uint16_t)y[i] + h[i] > PANEL_HEIGHT) return false;
+    }
+    for (uint8_t i = 0; i < 6; i++) {
+        if (!on[i]) continue;
+        for (uint8_t j = (uint8_t)(i + 1); j < 6; j++) {
+            if (!on[j]) continue;
+            uint8_t hi = h[i], hj = h[j];
+            /* i 4 is the lock row, 5 the battery row: the shared blank row. */
+            if (i == 4 && j == 5 && (uint16_t)y[4] + h[4] - FONT_STATUS_ROW0_BLANK == y[5]) hi = (uint8_t)(hi - FONT_STATUS_ROW0_BLANK);
+            if (rects_overlap(x[i], y[i], w[i], hi, x[j], y[j], w[j], hj)) return false;
+        }
+    }
     return true;
 }
 
 bool display_layout_rect(const display_layout_t *l, uint8_t i, uint8_t *x, uint8_t *y, uint8_t *w, uint8_t *h) {
-    uint8_t rx = 0, ry, rw = PANEL_WIDTH, rh;
+    uint8_t rx, ry, rw, rh;
     switch (i) {
         case 0: if (l->hidden & DL_HIDE_OS) return false;     rx = l->os_x; ry = l->os_y; rw = 24; rh = 24; break;
         case 1: if (l->hidden & DL_HIDE_CONN) return false;   rx = l->conn_x; ry = l->conn_y;
                 rw = CONN_ICON_W + 1u + CONN_NUM_W + 1u; rh = CONN_ICON_H; break;
-        case 2: ry = l->text_y;  rh = 31; break;             /* the band's rows: both lines, the icon, every face */
-        case 3: ry = l->clock_y; rh = CLOCK_BAND_H; break;
-        case 4: if (l->hidden & DL_HIDE_LOCK) return false;   ry = l->lock_y; rh = LOCK_TXT_H; break;
-        case 5: if (l->hidden & DL_HIDE_STATUS) return false; ry = l->status_y; rh = 23; break;
+        case 2: rx = l->text_x;  ry = l->text_y;  rw = l->text_w;  rh = DL_TEXT_H; break;
+        case 3: rx = l->clock_x; ry = l->clock_y; rw = l->clock_w; rh = DL_CLOCK_H; break;
+        case 4: if (l->hidden & DL_HIDE_LOCK) return false;   rx = l->lock_x; ry = l->lock_y; rw = l->lock_w; rh = DL_LOCK_H; break;
+        case 5: if (l->hidden & DL_HIDE_STATUS) return false; rx = l->status_x; ry = l->status_y; rw = l->status_w; rh = DL_STATUS_H; break;
         default: return false;
     }
     *x = rx; *y = ry; *w = rw; *h = rh;

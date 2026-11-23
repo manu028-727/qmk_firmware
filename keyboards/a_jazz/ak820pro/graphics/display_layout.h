@@ -17,8 +17,13 @@
  *   clock   the clock band (clock, date, play time, AM/PM)
  *   lock    the lock row (padlock, CAPS, WIN, FN/SCR)
  *   status  the battery row (icon, bolt/bulb slot, percentage, warnings)
- * The bands stay full-width in this phase: only their rows are data, and the
- * x of the two top-left elements. */
+ * Since the free placement (Manuel, 11-23) each band has an x and a width as
+ * well as a row, and the elements may sit in any order: the only rules are
+ * on the panel, no two overlapping, and each band at least its minimum
+ * width (display_layout_valid). A narrower band draws its content into its
+ * own columns: the clock and the play time step down to a smaller face, the
+ * lock row to its compact labels, the song lines and the battery's text are
+ * cut. At x 0 and width 128 every band draws exactly as before. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -31,7 +36,22 @@ typedef struct {
     uint8_t lock_y;
     uint8_t status_y;
     uint8_t hidden;      /* DL_HIDE_* bits: an element not drawn at all (M2) */
+    /* The bands' columns: x and width (free placement). */
+    uint8_t text_x, text_w;
+    uint8_t clock_x, clock_w;
+    uint8_t lock_x, lock_w;
+    uint8_t status_x, status_w;
 } display_layout_t;
+
+/* Each band's rows, and its narrowest width. */
+#define DL_TEXT_H    31   /* both lines, the transport icon, every face */
+#define DL_CLOCK_H   23
+#define DL_LOCK_H    23   /* its last row is blank: it may sit on the battery row's blank first row */
+#define DL_STATUS_H  23
+#define DL_TEXT_MIN_W   48
+#define DL_CLOCK_MIN_W  72   /* the date in the small face */
+#define DL_LOCK_MIN_W   86   /* the compact labels */
+#define DL_STATUS_MIN_W 52   /* the icon and its slot; the text needs more */
 
 /* What a layout may hide. The text band and the clock stay: the text band
  * hosts every overlay (connection words, alerts, readouts), and the wake's
@@ -55,7 +75,8 @@ typedef struct {
 
 #define DISPLAY_LAYOUT_DEFAULT \
     { DL_DEF_OS_X, DL_DEF_OS_Y, DL_DEF_CONN_X, DL_DEF_CONN_Y, \
-      DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y, DL_DEF_STATUS_Y, 0 }
+      DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y, DL_DEF_STATUS_Y, 0, \
+      0, 128, 0, 128, 0, 128, 0, 128 }
 
 /* DISPLAY_LAYOUT_CONST makes the layout a compile-time constant: the proof
  * build, whose display.o must match the pre-layout one instruction for
@@ -66,8 +87,8 @@ static const display_layout_t display_layout = DISPLAY_LAYOUT_DEFAULT;
 extern display_layout_t display_layout;
 #endif
 
-/* The band invariants display.c used to assert at compile time, for a layout
- * that arrives at run time. True: safe to draw. */
+/* Every element on the panel, at least its minimum width, and no two
+ * visible ones overlapping. True: safe to draw. */
 bool display_layout_valid(const display_layout_t *l);
 
 /* The rows and columns a visible built-in element owns (its clears reach all

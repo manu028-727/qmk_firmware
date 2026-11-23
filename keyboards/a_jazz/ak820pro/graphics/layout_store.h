@@ -18,8 +18,8 @@
  *     0 u8 kind   1 u8 flags   2 u8 x   3 u8 y   4 u8 w   5 u8 h
  *     6 u8 p0     7 u8 p1      8 u32 off (from the slot's start)   12 u32 zero
  *   kinds: 1 os  2 conn  3 text  4 clock  5 lock  6 status   (built-in: x/y
- *          move it, flags bit 0 hides it; text and clock never hide, and the
- *          four bands take y only)
+ *          move it, flags bit 0 hides it; text and clock never hide; the
+ *          four bands take a width too, w, 0 meaning to the right edge)
  *          16 image: w x h RGB565 pixels, big-endian, row by row, at off
  *          17 label: p1 characters at off, p0 the face (0 small 6x14, 1 20px)
  * A built-in a layout leaves out keeps its default place.

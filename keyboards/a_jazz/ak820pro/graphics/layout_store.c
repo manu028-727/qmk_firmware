@@ -70,6 +70,8 @@ static bool place_ok(void) {
     return true;
 }
 
+static inline uint8_t band_w(uint8_t x, uint8_t w) { return w ? w : (x < 128u ? (uint8_t)(128u - x) : 0u); }
+
 /* One record into the pending layout. False: the slot is refused. */
 static bool take_record(const uint8_t *r, uint8_t s) {
     uint8_t  kind = r[0], flags = r[1], x = r[2], y = r[3], w = r[4], h = r[5], p0 = r[6], p1 = r[7];
@@ -83,10 +85,11 @@ static bool take_record(const uint8_t *r, uint8_t s) {
         switch (kind) {
             case DLK_OS:     l->os_x = x; l->os_y = y; if (hide) l->hidden |= DL_HIDE_OS; break;
             case DLK_CONN:   l->conn_x = x; l->conn_y = y; if (hide) l->hidden |= DL_HIDE_CONN; break;
-            case DLK_TEXT:   if (hide || x) return false; l->text_y = y; break;
-            case DLK_CLOCK:  if (hide || x) return false; l->clock_y = y; break;
-            case DLK_LOCK:   if (x) return false; l->lock_y = y; if (hide) l->hidden |= DL_HIDE_LOCK; break;
-            case DLK_STATUS: if (x) return false; l->status_y = y; if (hide) l->hidden |= DL_HIDE_STATUS; break;
+            /* The bands: x and a width, 0 meaning to the panel's right edge. */
+            case DLK_TEXT:   if (hide) return false; l->text_x = x; l->text_y = y; l->text_w = band_w(x, w); break;
+            case DLK_CLOCK:  if (hide) return false; l->clock_x = x; l->clock_y = y; l->clock_w = band_w(x, w); break;
+            case DLK_LOCK:   l->lock_x = x; l->lock_y = y; l->lock_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_LOCK; break;
+            case DLK_STATUS: l->status_x = x; l->status_y = y; l->status_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_STATUS; break;
         }
         return true;
     }
