@@ -48,19 +48,22 @@ typedef struct {
 #define DL_CLOCK_H   23
 #define DL_LOCK_H    23   /* its last row is blank: it may sit on the battery row's blank first row */
 #define DL_STATUS_H  23
-#define DL_TEXT_MIN_W   48
+#define DL_TEXT_MIN_W   32   /* the icon and a few small cells */
 #define DL_CLOCK_MIN_W  72   /* the date in the small face */
-#define DL_LOCK_MIN_W   86   /* the compact labels */
+#define DL_LOCK_MIN_W   40   /* the padlock and single letters: C W F */
 #define DL_STATUS_MIN_W 52   /* the icon and its slot; the text needs more */
 
-/* What a layout may hide. The text band and the clock stay: the text band
- * hosts every overlay (connection words, alerts, readouts), and the wake's
- * backlight waits for the clock's first paint. */
+/* What a layout may hide: since 11-23, any of them. A hidden text band
+ * takes its messages with it (the connection words, the alerts, the
+ * readouts): nothing shows them. A hidden clock is a clock the wake does not
+ * wait for, as with the clock off. */
 #define DL_HIDE_OS     0x01u
 #define DL_HIDE_CONN   0x02u
+#define DL_HIDE_TEXT   0x04u
+#define DL_HIDE_CLOCK  0x08u
 #define DL_HIDE_LOCK   0x10u
 #define DL_HIDE_STATUS 0x20u
-#define DL_HIDE_MASK   (DL_HIDE_OS | DL_HIDE_CONN | DL_HIDE_LOCK | DL_HIDE_STATUS)
+#define DL_HIDE_MASK   (DL_HIDE_OS | DL_HIDE_CONN | DL_HIDE_TEXT | DL_HIDE_CLOCK | DL_HIDE_LOCK | DL_HIDE_STATUS)
 #define DL_HIDDEN(bit) ((display_layout.hidden & (bit)) != 0)
 
 /* Today's dashboard, as display.c's #defines had it. */

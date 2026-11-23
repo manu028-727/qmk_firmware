@@ -1227,6 +1227,13 @@ void draw_clock(void) {
      * animation's) would otherwise show the old second, or an expired
      * readout, first (codex, the play-times verify, P3 4). */
     display_playback_tick();
+    /* Hidden by the layout: nothing to paint, and nothing owed. */
+    if (DL_HIDDEN(DL_HIDE_CLOCK)) {
+        clock_force_repaint = false;
+        clock_relayout      = false;
+        ampm.shown          = false;
+        return;
+    }
     if (pb.active) {
         /* Leaving playback needs the band cleared of the wider/other-sized
          * glyphs before the clock is laid back down; entering needs the
@@ -2067,14 +2074,19 @@ static void draw_battery(bool force) {
 _Static_assert(DL_PADLOCK_FITS(DL_DEF_LOCK_Y, DL_DEF_STATUS_Y), "lock band must contain the 16px padlock drawn at LOCK_Y+3");
 _Static_assert(DL_STATUS_FITS(DL_DEF_STATUS_Y), "battery band (20px face, 23-row cell) must fit the panel");
 _Static_assert(DL_CLOCK_ABOVE_LOCK(DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y), "clock band must not overlap the lock band");
-/* The slots' columns from the band's x. A band narrower than LOCK_FULL_W
- * draws the compact row: the small face, 4 rows down, the slots closer. */
-#define LOCK_FULL_W 126
+/* The slots' columns from the band's x, in three sizes by the band's width:
+ * the full row (LOCK_FULL_W and up), the compact one (the small face, 4 rows
+ * down, the slots closer; LOCK_COMPACT_W and up), and the mini one, the
+ * small face's single letters C, W and F or S beside the padlock. */
+#define LOCK_FULL_W    126
+#define LOCK_COMPACT_W 86
 #define LOCK_COMPACT (LOCK_BW < LOCK_FULL_W)
-#define LOCK_PAD_X   (LOCK_BX + (LOCK_COMPACT ? 2u : 4u))
-#define LOCK_CAP_X   (LOCK_BX + (LOCK_COMPACT ? 18u : 20u))   // "CAPS" 4 glyphs = 40px -> 20..59 (compact 24px)
-#define LOCK_WIN_X   (LOCK_BX + (LOCK_COMPACT ? 45u : 64u))   // "WIN"  3 glyphs = 30px -> 64..93 (compact 18px)
-#define LOCK_SLOT3_X (LOCK_BX + (LOCK_COMPACT ? 66u : 96u))   // shared: "FN" 20px, "SCR" 30px -> 96..125 (compact 18px)
+#define LOCK_MINI    (LOCK_BW < LOCK_COMPACT_W)
+#define LOCK_PAD_X   (LOCK_BX + (LOCK_MINI ? 1u : LOCK_COMPACT ? 2u : 4u))
+#define LOCK_CAP_X   (LOCK_BX + (LOCK_MINI ? 17u : LOCK_COMPACT ? 18u : 20u))   // "CAPS" 4 glyphs = 40px -> 20..59 (compact 24px, mini "C")
+#define LOCK_WIN_X   (LOCK_BX + (LOCK_MINI ? 24u : LOCK_COMPACT ? 45u : 64u))   // "WIN"  3 glyphs = 30px -> 64..93 (compact 18px, mini "W")
+#define LOCK_SLOT3_X (LOCK_BX + (LOCK_MINI ? 31u : LOCK_COMPACT ? 66u : 96u))   // shared: "FN" 20px, "SCR" 30px -> 96..125 (compact 18px, mini "F"/"S")
+#define LOCK_LBL(full, mini) (LOCK_MINI ? (mini) : (full))
 #define LOCK_FONT    (LOCK_COMPACT ? FONT_SMALL : FONT_STATUS)
 #define LOCK_ADV     (LOCK_COMPACT ? FONT_SMALL_ADV : 10u)
 #define LOCK_TXT_Y   (LOCK_COMPACT ? (uint16_t)(LOCK_Y + 4) : (uint16_t)LOCK_Y)
@@ -2106,9 +2118,9 @@ static void draw_padlock(uint16_t x, uint16_t y, uint16_t col) {
 #define LOCK_PAD_W  13
 #define LOCK_PAD_H  16
 #define LOCK_TXT_H  23                    /* FONT_STATUS cell height */
-#define LOCK_CAP_W  (4u * LOCK_ADV)       /* "CAPS" 4 glyphs @10px            */
-#define LOCK_WIN_W  (3u * LOCK_ADV)       /* "WIN"  3 glyphs                  */
-#define LOCK_SL3_W  (3u * LOCK_ADV)       /* "SCR" 3; covers "FN" shrinking   */
+#define LOCK_CAP_W  ((LOCK_MINI ? 1u : 4u) * LOCK_ADV)   /* "CAPS" 4 glyphs @10px            */
+#define LOCK_WIN_W  ((LOCK_MINI ? 1u : 3u) * LOCK_ADV)   /* "WIN"  3 glyphs                  */
+#define LOCK_SL3_W  ((LOCK_MINI ? 1u : 3u) * LOCK_ADV)   /* "SCR" 3; covers "FN" shrinking   */
 /* draw_battery() no longer clears its whole strip, so nothing erases lock-band
  * pixels that stray below LOCK_Y + LOCK_TXT_H. Since 10-28 the lock cells
  * reach ONE row into the battery strip (83 + 23 = 106 against STATUS_Y 105),
@@ -2203,7 +2215,7 @@ static bool draw_locks_diff(bool one, bool queued) {
      * slot is Fn, but the state is not thrown away on the rare occasion some
      * other host or app does set it. A pointer compare is enough: both are
      * string literals. */
-    const char *slot3 = scr ? "SCR" : (fn ? "FN" : NULL);
+    const char *slot3 = scr ? LOCK_LBL("SCR", "S") : (fn ? LOCK_LBL("FN", "F") : NULL);
 
     bool did = false;
     if (pad != shown_pad) {
@@ -2214,14 +2226,14 @@ static bool draw_locks_diff(bool one, bool queued) {
         if (one) return true;
     }
     if (caps != shown_caps) {
-        if (caps) { if (!lock_label(LOCK_CAP_X, "CAPS", queued)) return did; }
+        if (caps) { if (!lock_label(LOCK_CAP_X, LOCK_LBL("CAPS", "C"), queued)) return did; }
         else      lcd_clear_rect(LOCK_CAP_X, LOCK_Y, LOCK_CAP_W, LOCK_TXT_H);
         shown_caps = caps;
         did = true;
         if (one) return true;
     }
     if (gui != shown_gui) {
-        if (gui) { if (!lock_label(LOCK_WIN_X, "WIN", queued)) return did; }
+        if (gui) { if (!lock_label(LOCK_WIN_X, LOCK_LBL("WIN", "W"), queued)) return did; }
         else     lcd_clear_rect(LOCK_WIN_X, LOCK_Y, LOCK_WIN_W, LOCK_TXT_H);
         shown_gui = gui;
         did = true;
@@ -3437,7 +3449,15 @@ static bool        ts_heavy_this_pass = false;
  * buffer kept whole, so queue_line diffs and shadows only what is shown. The
  * 20px single line doesn't come here: its face is the setting's in neither. */
 static void queue_text_line(uint8_t line, uint16_t x, uint16_t y) {
-    const uint8_t face = kb_eeconfig_get_font();
+    uint8_t face = kb_eeconfig_get_font();
+    /* A band narrower than the panel steps down to the small face when the
+     * line would be cut in the setting's (as the clock steps down); at full
+     * width the setting's face always, as before. */
+    if (TEXT_BW < PANEL_WIDTH && face != TEXT_FACE_SMALL && x < TEXT_BX + TEXT_BW) {
+        uint16_t room = (uint16_t)(TEXT_BX + TEXT_BW - x);
+        uint16_t len  = text_fit_len(face, line, text_buf[line]);
+        if (len < strlen(text_buf[line]) || len * FONT_SONG_LARGE_ADV > room) face = TEXT_FACE_SMALL;
+    }
     char          cut[DISPLAY_TEXT_MAX + 1];   /* the stack's, for the call: no static RAM */
     const uint8_t n = text_fit_len(face, line, text_buf[line]);
     memcpy(cut, text_buf[line], n);
@@ -3537,6 +3557,13 @@ static void draw_text_slot(bool force) {
         playback_title_gone();
     }
     icon_guess_expire(timer_read32());
+    /* Hidden by the layout: the slot keeps its text and its timeouts, and
+     * paints nothing. A layout that shows it again repaints it whole. */
+    if (DL_HIDDEN(DL_HIDE_TEXT)) {
+        text_dirty = false;
+        ts_step    = TS_IDLE;
+        return;
+    }
     if (!force && ts_step != TS_IDLE) {   /* a staged repaint under way: its next step */
         text_slot_steps();
         return;
@@ -3755,7 +3782,7 @@ static void wake_paint_step(void) {
  * and its DONE settles the wake's flags (restore_done). */
 bool display_wake_repainted(void) {
     if (!OWNER_IS(PANEL_DASH)) return !lcd_blit_busy();
-    bool no_clock = !splash_cleared || clock_mode == DISPLAY_CLOCK_OFF || pb.active;
+    bool no_clock = !splash_cleared || clock_mode == DISPLAY_CLOCK_OFF || pb.active || DL_HIDDEN(DL_HIDE_CLOCK);
     bool clock_ok = no_clock || (!wake_clock_due && (int16_t)(clock_gen_painted - wake_clock_target) >= 0);
     return clock_ok && !wake_batt_due && !batt_dirty && display_bus_idle();
 }
@@ -4070,8 +4097,8 @@ bool display_layout_rect(const display_layout_t *l, uint8_t i, uint8_t *x, uint8
         case 0: if (l->hidden & DL_HIDE_OS) return false;     rx = l->os_x; ry = l->os_y; rw = 24; rh = 24; break;
         case 1: if (l->hidden & DL_HIDE_CONN) return false;   rx = l->conn_x; ry = l->conn_y;
                 rw = CONN_ICON_W + 1u + CONN_NUM_W + 1u; rh = CONN_ICON_H; break;
-        case 2: rx = l->text_x;  ry = l->text_y;  rw = l->text_w;  rh = DL_TEXT_H; break;
-        case 3: rx = l->clock_x; ry = l->clock_y; rw = l->clock_w; rh = DL_CLOCK_H; break;
+        case 2: if (l->hidden & DL_HIDE_TEXT) return false;   rx = l->text_x;  ry = l->text_y;  rw = l->text_w;  rh = DL_TEXT_H; break;
+        case 3: if (l->hidden & DL_HIDE_CLOCK) return false;  rx = l->clock_x; ry = l->clock_y; rw = l->clock_w; rh = DL_CLOCK_H; break;
         case 4: if (l->hidden & DL_HIDE_LOCK) return false;   rx = l->lock_x; ry = l->lock_y; rw = l->lock_w; rh = DL_LOCK_H; break;
         case 5: if (l->hidden & DL_HIDE_STATUS) return false; rx = l->status_x; ry = l->status_y; rw = l->status_w; rh = DL_STATUS_H; break;
         default: return false;

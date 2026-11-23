@@ -86,8 +86,8 @@ static bool take_record(const uint8_t *r, uint8_t s) {
             case DLK_OS:     l->os_x = x; l->os_y = y; if (hide) l->hidden |= DL_HIDE_OS; break;
             case DLK_CONN:   l->conn_x = x; l->conn_y = y; if (hide) l->hidden |= DL_HIDE_CONN; break;
             /* The bands: x and a width, 0 meaning to the panel's right edge. */
-            case DLK_TEXT:   if (hide) return false; l->text_x = x; l->text_y = y; l->text_w = band_w(x, w); break;
-            case DLK_CLOCK:  if (hide) return false; l->clock_x = x; l->clock_y = y; l->clock_w = band_w(x, w); break;
+            case DLK_TEXT:   l->text_x = x; l->text_y = y; l->text_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_TEXT; break;
+            case DLK_CLOCK:  l->clock_x = x; l->clock_y = y; l->clock_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_CLOCK; break;
             case DLK_LOCK:   l->lock_x = x; l->lock_y = y; l->lock_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_LOCK; break;
             case DLK_STATUS: l->status_x = x; l->status_y = y; l->status_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_STATUS; break;
         }
