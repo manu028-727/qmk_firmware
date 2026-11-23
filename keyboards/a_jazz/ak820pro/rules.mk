@@ -34,6 +34,7 @@ SRC += graphics/playback.c   # the playback readout's state (pure logic)
 SRC += graphics/batt_text.c  # the battery readout's text, percent or hours (pure logic; the menu's P4)
 SRC += graphics/text_fit.c   # the song text's budgets and cut, per face (pure logic; plans/MENU-8X16-PLAN.md B6)
 SRC += graphics/power_bulb.c # the power modes' bulbs: the battery row's and the menu's Power page's (10-27)
+SRC += graphics/layout_store.c # a dashboard layout from the external flash (the screen editor, M2/M3)
 SRC += rtc/rtc.c
 SRC += watchdog.c   # hardware WDT: arm/kick/boot accounting/bootloader stop
 SRC += watchdog_record.c # reset-retained operation breadcrumbs

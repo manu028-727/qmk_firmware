@@ -7,6 +7,7 @@
 #include "connection.h"
 
 #include "graphics/display.h"
+#include "graphics/layout_store.h"
 #include "graphics/lcd_bus.h"
 #include "bluetooth/ch582f_ajazz.h"
 #include "rtc/rtc.h"
@@ -636,6 +637,7 @@ void housekeeping_task_kb(void) {
      * which is why display_housekeeping_task() may gate on that flag: keep this
      * call OUT of that function (see the gate's comment in display.c). */
     WDT_CALL(WDT_SITE_DISPLAY_PUMP, ACCT(ACCT_PUMP, display_blit_pump()));
+    layout_store_task();   /* a layout reload's one bounded step (the screen editor, M2) */
 #ifdef CONSOLE_ENABLE
     blit_stat_task();
 #endif

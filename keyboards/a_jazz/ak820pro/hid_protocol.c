@@ -12,6 +12,7 @@
 #include "rtc/rtc_payload.h"           /* RTC_SET_TIME_MS validation, shared with type 4 */
 #include "graphics/display.h"
 #include "graphics/lcd_bus.h"
+#include "graphics/layout_store.h"     /* FC_LAYOUT_RELOAD / FC_LAYOUT_INFO */
 #include "health.h"
 #include "kb_eeconfig.h"
 #include "bluetooth/ch582f_ajazz.h"   /* HC_CONN readout + fault injection */
@@ -189,6 +190,8 @@ enum {
     FC_STATUS       = 0x07,  // -> busy[1]
     FC_UNLOCK       = 0x08,  // on[1]  (animation slots)
     FC_CRC_NEXT     = 0x09,  // continue a running CRC -> crc[4] when done
+    FC_LAYOUT_RELOAD = 0x0A, // load the dashboard layout again (layout_store.h), in the background
+    FC_LAYOUT_INFO  = 0x0B,  // -> layout_store_info()'s 12 bytes
     // status codes returned in data[3]
     FS_OK           = 0x00,
     FS_BUSY         = 0x01,  // chip busy -- resend this packet
@@ -261,6 +264,15 @@ static void flash_command(uint8_t *data, uint8_t length) {
         case FC_STATUS:
             data[3] = FS_OK;
             data[4] = flash_busy() ? 1 : 0;
+            return;
+
+        case FC_LAYOUT_RELOAD:
+            data[3] = layout_store_reload() ? FS_OK : FS_BUSY;
+            return;
+
+        case FC_LAYOUT_INFO:
+            data[3] = FS_OK;
+            layout_store_info(&data[4]);
             return;
 
         case FC_UNLOCK:

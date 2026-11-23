@@ -10,6 +10,7 @@
 #include "graphics/text_fit.h"    /* the song text's budgets and cut, per face (B6) */
 #include "lcd_bus.h"
 #include "graphics/display_layout.h"   /* the dashboard's origins as data (M1) */
+#include "graphics/layout_store.h"     /* a layout from the external flash, and its custom widgets (M2, M3) */
 
 #include <string.h>
 #include <stdio.h>
@@ -175,6 +176,12 @@ static bool mac_mode = false;
 /* The OS logo's origin (display_layout.h). */
 #define OS_LOGO_X (display_layout.os_x)
 #define OS_LOGO_Y (display_layout.os_y)
+static uint16_t os_logo_id(void);
+/* The OS logo, unless the layout hides it. */
+static void paint_os_logo(void) {
+    if (DL_HIDDEN(DL_HIDE_OS)) return;
+    lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
+}
 static uint16_t os_logo_id(void) {
     if (mac_mode) return ASSET_APPLE_ICON_24X24;
     if (kb_eeconfig_get_os_linux() && flash_asset(ASSET_WINDOWS_LINUX_ICON_24X24)) return ASSET_WINDOWS_LINUX_ICON_24X24;
@@ -463,6 +470,8 @@ static uint8_t restore_sub = 0;            // a restore stage split over passes:
 static void debug_done_note(void);          // C10: the debug page's completed generation
 #endif
 static void conn_status_update(void);   // the band's wireless status, before the restore's text stage
+static bool custom_paint_step(void);    // M3: one piece of the layout's images and labels
+static void custom_paint_restart(void); // ...from the first, after a restore
 
 /* ---- Playback position ----------------------------------------------------
  *
@@ -1380,7 +1389,7 @@ static void debug_restore_step(void) {
     switch (step - DBG_CLEAR_BANDS) {
         case 1:
             splash_cleared = true;
-            lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
+            paint_os_logo();
             logo_os_stale = false;
             break;
         case 2:
@@ -1451,6 +1460,7 @@ bool display_init_kb(void) {
     //   ak820ctl flash write 0x0CE0000 graphics/res/flash_assets.bin
     if (flash_assets_init()) {
         dprintf("[assets] index ok, %u entries\n", flash_assets_count());
+        layout_store_boot();   /* the layout, before anything is placed by it (M2) */
         lcd_draw_flash_image(ASSET_SONIXQMK, 0, 0);
     } else {
         dprintf("[assets] NO VALID INDEX at 0x%06lX -- panel stays blank.\n"
@@ -1523,6 +1533,7 @@ bool display_blink(uint16_t period_ms) {
 
 // Paints the whole three-transport strip for the current mode.
 static void draw_conn_row(void) {
+    if (DL_HIDDEN(DL_HIDE_CONN)) return;
     uint16_t id = (connection_mode == CONN_MODE_BLUETOOTH) ? ASSET_CONN_ROW_BT
                 : (connection_mode == CONN_MODE_2_4G)      ? ASSET_CONN_ROW_24G
                                                            : ASSET_CONN_ROW_CABLE;
@@ -1535,6 +1546,7 @@ static void draw_conn_row(void) {
 // Driven every housekeeping tick (~10 Hz) so the blink animates; the redraw is
 // self-guarded so it only touches the panel on a visible transition.
 static void draw_conn_number(bool force) {
+    if (DL_HIDDEN(DL_HIDE_CONN)) return;
     uint8_t slot  = ch582_get_target_slot();               // 1-3, or 0
     char    digit = (slot >= 1 && slot <= 3) ? (char)('0' + slot) : 0;
 
@@ -1738,6 +1750,15 @@ static void draw_battery(bool force) {
     static uint8_t  last_txt_w = 0;            /* ...and how wide it is            */
     static bool     last_absent = false;       /* no pack fitted: cross, no number */
     static char     last_txt[BATT_TEXT_MAX + 1] = "\x01";   /* what the text slot says ("\x01": never drawn) */
+
+    /* Hidden by the layout: nothing to paint, nothing owed (the restore's
+     * outline stage and RESIDUAL wait on batt_dirty and the bulb). A later
+     * layout that shows the row again repaints it whole in its restore. */
+    if (DL_HIDDEN(DL_HIDE_STATUS)) {
+        batt_dirty     = 0;
+        batt_last_bulb = SLOT_NO_BULB;
+        return;
+    }
 
     /* The level is battery.c's, from the CH582F's `5C` -- a voltmeter on the
      * pack -- in whole percent (tenths with BATTERY_SHOW_TENTHS). Never VDD, which this row used to show: on battery
@@ -2172,6 +2193,7 @@ static bool draw_locks_diff(bool one, bool queued) {
  * Caps press shows its padlock and its label on the same tick. `force` means
  * the caller has just cleared the screen and nothing is drawn. */
 static void draw_locks(bool force) {
+    if (DL_HIDDEN(DL_HIDE_LOCK)) { locks_forget(); return; }
     if (force) locks_forget();
     draw_locks_diff(false, true);
 }
@@ -2179,6 +2201,7 @@ static void draw_locks(bool force) {
 /* Fn+D restore: ONE component per call; `first` forgets the freshly cleared
  * band. Returns true while a call painted something -- keep calling. */
 static bool draw_locks_staged(bool first) {
+    if (DL_HIDDEN(DL_HIDE_LOCK)) { locks_forget(); return false; }
     if (first) locks_forget();
     return draw_locks_diff(true, false);
 }
@@ -3049,7 +3072,7 @@ static void residual_step(bool *blocked, uint32_t *since) {
         case PO_RES_LOGO_OS:
             *blocked = false;
             logo_os_stale = false;
-            lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
+            paint_os_logo();
             return;
         case PO_RES_LOGO_CONN:
             *blocked = false;
@@ -3138,6 +3161,11 @@ void display_blit_pump(void) {
         return;
     }
 
+    /* The layout's own widgets, once the bands' queues are idle (M3). */
+    if (!gq_pending() && !lq_pending() && !lcd_blit_busy() && custom_paint_step()) {
+        blocked = false;
+        return;
+    }
     pump_one_queued(&blocked, &blocked_since);
 }
 
@@ -3736,7 +3764,7 @@ void display_housekeeping_task(void) {
          * a tick, in this owner's turn, never over another owner's page. */
         if (logo_os_stale) {
             logo_os_stale = false;
-            lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
+            paint_os_logo();
         } else if (logo_conn_stale) {
             logo_conn_stale = false;
             draw_conn_row();
@@ -3824,6 +3852,7 @@ static void restore_done(void) {
         po_note_fail(PO_FAIL_EARLY_DONE);
     wake_batt_due = false;
     if ((int16_t)(clock_gen_painted - wake_clock_target) >= 0) wake_clock_due = false;
+    custom_paint_restart();   /* the panel was cleared: the layout's widgets again */
 }
 
 /* What an event decided, done in C1's order. */
@@ -3928,6 +3957,7 @@ display_layout_t display_layout = DISPLAY_LAYOUT_DEFAULT;
  * A later phase may relax the order; it must not relax a fit. */
 bool display_layout_valid(const display_layout_t *l) {
     if (!l) return false;
+    if (l->hidden & (uint8_t)~DL_HIDE_MASK) return false;
     if (l->os_x + 24u > PANEL_WIDTH || l->os_y + 24u > PANEL_HEIGHT) return false;
     if (l->conn_x + CONN_ICON_W + 1u + CONN_NUM_W + 1u > PANEL_WIDTH) return false;
     if (l->conn_y + CONN_ICON_H > PANEL_HEIGHT) return false;
@@ -3943,4 +3973,66 @@ bool display_layout_valid(const display_layout_t *l) {
     if (!DL_LOCK_CELLS_FIT(l->lock_y, l->status_y) || !DL_LOCK_INK_FITS(l->lock_y, l->status_y)) return false;
     return true;
 }
+
+bool display_layout_rect(const display_layout_t *l, uint8_t i, uint8_t *x, uint8_t *y, uint8_t *w, uint8_t *h) {
+    uint8_t rx = 0, ry, rw = PANEL_WIDTH, rh;
+    switch (i) {
+        case 0: if (l->hidden & DL_HIDE_OS) return false;     rx = l->os_x; ry = l->os_y; rw = 24; rh = 24; break;
+        case 1: if (l->hidden & DL_HIDE_CONN) return false;   rx = l->conn_x; ry = l->conn_y;
+                rw = CONN_ICON_W + 1u + CONN_NUM_W + 1u; rh = CONN_ICON_H; break;
+        case 2: ry = l->text_y;  rh = 31; break;             /* the band's rows: both lines, the icon, every face */
+        case 3: ry = l->clock_y; rh = CLOCK_BAND_H; break;
+        case 4: if (l->hidden & DL_HIDE_LOCK) return false;   ry = l->lock_y; rh = LOCK_TXT_H; break;
+        case 5: if (l->hidden & DL_HIDE_STATUS) return false; ry = l->status_y; rh = 23; break;
+        default: return false;
+    }
+    *x = rx; *y = ry; *w = rw; *h = rh;
+    return true;
+}
+
+/* --- The custom widgets (M3): images and labels from the layout's slot ------- */
+
+/* Painted after every restore, one bounded piece a pass from the pump once the
+ * band queues are idle: an image a strip of rows at a time (<= CW_STRIP_BYTES,
+ * a clear band's size, ~5.5 ms), a label a glyph at a time. Static content:
+ * nothing repaints them until the next restore, which every layout change and
+ * every return to the dashboard runs. */
+#define CW_STRIP_BYTES 4096u
+#define CW_IDLE        0xFFu
+static uint8_t cw_i   = CW_IDLE;   /* the widget being painted */
+static uint8_t cw_row = 0;         /* its next row (image) or character (label) */
+
+static void custom_paint_restart(void) { cw_i = dl_custom_n ? 0 : CW_IDLE; cw_row = 0; }
+
+/* One piece; false when there was nothing to paint. */
+static bool custom_paint_step(void) {
+    if (cw_i == CW_IDLE || !splash_cleared) return false;
+    if (cw_i >= dl_custom_n) { cw_i = CW_IDLE; return false; }
+    const dl_custom_t *c = &dl_custom[cw_i];
+    bool done;
+    if (c->kind == DLK_IMAGE) {
+        uint16_t rows = (uint16_t)(CW_STRIP_BYTES / ((uint16_t)c->w * 2u));
+        if (!rows) rows = 1;
+        if (rows > (uint16_t)(c->h - cw_row)) rows = (uint16_t)(c->h - cw_row);
+        lcd_blit_flash(c->addr + (uint32_t)cw_row * c->w * 2u, c->x, (uint16_t)(c->y + cw_row), c->w, rows);
+        lcd_blit_wait();
+        cw_row = (uint8_t)(cw_row + rows);
+        done   = cw_row >= c->h;
+    } else {
+        uint16_t font = c->font ? FONT_STATUS : FONT_SMALL;
+        uint8_t  ch   = ' ';
+        flash_read_bytes(c->addr + cw_row, &ch, 1);
+        lcd_draw_flash_glyph(font, (char)ch, (uint16_t)(c->x + cw_row * lcd_font_advance(font)), c->y);
+        cw_row++;
+        done = cw_row >= c->len;
+    }
+    if (done) { cw_i++; cw_row = 0; if (cw_i >= dl_custom_n) cw_i = CW_IDLE; }
+    return true;
+}
+
+void display_layout_changed(void) {
+    cw_i = CW_IDLE;   /* the restore below repaints them from the first */
+    po_apply(po_event(PO_EV_STARTUP, bkl_wake_hold, timer_read32()));
+}
+
 #endif /* DISPLAY_LAYOUT_CONST */

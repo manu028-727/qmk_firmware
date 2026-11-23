@@ -30,7 +30,18 @@ typedef struct {
     uint8_t clock_y;
     uint8_t lock_y;
     uint8_t status_y;
+    uint8_t hidden;      /* DL_HIDE_* bits: an element not drawn at all (M2) */
 } display_layout_t;
+
+/* What a layout may hide. The text band and the clock stay: the text band
+ * hosts every overlay (connection words, alerts, readouts), and the wake's
+ * backlight waits for the clock's first paint. */
+#define DL_HIDE_OS     0x01u
+#define DL_HIDE_CONN   0x02u
+#define DL_HIDE_LOCK   0x10u
+#define DL_HIDE_STATUS 0x20u
+#define DL_HIDE_MASK   (DL_HIDE_OS | DL_HIDE_CONN | DL_HIDE_LOCK | DL_HIDE_STATUS)
+#define DL_HIDDEN(bit) ((display_layout.hidden & (bit)) != 0)
 
 /* Today's dashboard, as display.c's #defines had it. */
 #define DL_DEF_OS_X     0
@@ -44,7 +55,7 @@ typedef struct {
 
 #define DISPLAY_LAYOUT_DEFAULT \
     { DL_DEF_OS_X, DL_DEF_OS_Y, DL_DEF_CONN_X, DL_DEF_CONN_Y, \
-      DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y, DL_DEF_STATUS_Y }
+      DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y, DL_DEF_STATUS_Y, 0 }
 
 /* DISPLAY_LAYOUT_CONST makes the layout a compile-time constant: the proof
  * build, whose display.o must match the pre-layout one instruction for
@@ -58,3 +69,12 @@ extern display_layout_t display_layout;
 /* The band invariants display.c used to assert at compile time, for a layout
  * that arrives at run time. True: safe to draw. */
 bool display_layout_valid(const display_layout_t *l);
+
+/* The rows and columns a visible built-in element owns (its clears reach all
+ * of them), for the custom widgets' overlap check. Index: 0 os, 1 conn,
+ * 2 text, 3 clock, 4 lock, 5 status. False: hidden, it owns nothing. */
+bool display_layout_rect(const display_layout_t *l, uint8_t i, uint8_t *x, uint8_t *y, uint8_t *w, uint8_t *h);
+
+/* A new layout is in display_layout (and the custom widgets in
+ * layout_store.h): repaint the dashboard through the staged restore. */
+void display_layout_changed(void);
