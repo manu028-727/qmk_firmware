@@ -76,7 +76,6 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
 // ids into the index that flash_assets_init() reads at boot. The full 95-glyph
 // atlases are used, so EMBED_CHARSET and its "letters silently draw nothing"
 // trap are gone.
-#define FONT_CLOCK      ASSET_IOSEVKA_REGULAR_30   // big clock
 #define FONT_STATUS     ASSET_IOSEVKA_MEDIUM_20    // small status text
 #define FONT_STATUS_ADV 10   /* 20px face cell advance. The firmware reads
                               * cell_w from the flash index at RUNTIME for
@@ -133,7 +132,11 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
  * and 42-55, row 41 left to the band's clears. Was 14, one cell apart; Large's
  * capitals are two rows taller in the same cell, and at 14 a descender on the
  * artist's line came within one row of the title's capitals (10-28). */
-#define TEXT_LINE_H     15
+#define TEXT_LINE_H_DEF 15
+/* A layout's own face for the song lines (Manuel, 11-23): its cell and a row. */
+#define TEXT_OWN_FACE   (display_layout.text_f != DL_NO_FONT)
+#define TEXT_OWN_FONT   DL_FONT_ID(display_layout.text_f)
+#define TEXT_LINE_H     (TEXT_OWN_FACE ? (uint16_t)(display_layout.text_lh + 1u) : (uint16_t)TEXT_LINE_H_DEF)
 /* The transport icon sits beside LINE 0 only (it is 12px tall in a 14px row),
  * so line 1 starts at the panel edge and gains the gutter back -- 21 glyphs
  * (2 + 21*6 = 128) against line 0's 19. See DISPLAY_TEXT_MAX_L1.
@@ -147,8 +150,15 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
 
 /* Single-line offsets: where the text CELL starts. The icon is then centred on
  * whichever face is in use -- see the cap-band figures above. */
-#define TEXT_FONT_DY    9    /* 13px face, and Large: the same cell height and cap centre (above) */
+#define TEXT_FONT_DY_DEF 9   /* 13px face, and Large: the same cell height and cap centre (above) */
+/* A layout's own face: one line centred in the band's rows. */
+#define TEXT_FONT_DY    (TEXT_OWN_FACE ? (uint16_t)((DL_TEXT_ROWS(&display_layout) - display_layout.text_lh) / 2u) : (uint16_t)TEXT_FONT_DY_DEF)
+/* The transport icon (12 rows) centred on line 0's cell, in the own face. */
+#define TEXT_OWN_ICON_DY ((uint16_t)(display_layout.text_lh > 12u ? (display_layout.text_lh - 12u) / 2u : 0u))
 #define TEXT_BIG_DY     3    /* 20px face */
+/* The band's messages: the 20px face, or the layout's own, centred. */
+#define TEXT_STATUS_FONT (TEXT_OWN_FACE ? TEXT_OWN_FONT : (uint16_t)FONT_STATUS)
+#define TEXT_STATUS_Y    ((uint16_t)(TEXT_Y + (TEXT_OWN_FACE ? TEXT_FONT_DY : TEXT_BIG_DY)))
 /* Both were a row higher until the band grew two rows at its foot (CLOCK_Y). */
 /* (128 - TEXT_X - 2) / 10px advance = 11 glyphs in the big face. */
 #define TEXT_BIG_MAX    11
@@ -189,6 +199,13 @@ static uint16_t os_logo_id(void);
 /* The OS logo, unless the layout hides it. */
 static void paint_os_logo(void) {
     if (DL_HIDDEN(DL_HIDE_OS)) return;
+    /* At the layout's size, its own icon (layout_store.h, kind 20). */
+    if (display_layout.os_s) {
+        uint16_t  id = os_logo_id();
+        dl_icon_t *ic = &dl_icon[id == ASSET_APPLE_ICON_24X24 ? DLI_APPLE : id == ASSET_WINDOWS_LINUX_ICON_24X24 ? DLI_LINUX : DLI_WINDOWS];
+        if (ic->w) { lcd_blit_flash(ic->addr, OS_LOGO_X, OS_LOGO_Y, ic->w, ic->h); lcd_blit_wait(); }
+        return;
+    }
     lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
 }
 static uint16_t os_logo_id(void) {
@@ -447,7 +464,15 @@ static bool display_backlight_init(void) {
  * cell is 23 rows, borrowing one row from the 4-row gap below. The clear rect
  * must cover everything either owner can draw, or switching between them
  * leaves a row behind -- the padlock mistake again. */
-#define CLOCK_BAND_H 23
+#define CLOCK_BAND_H ((uint16_t)DL_CLOCK_ROWS(&display_layout))   /* 23, or the layout's face's cell and a row */
+/* The clock's digits: the blob's 30 px face, or the layout's own size. */
+#define FONT_CLOCK (display_layout.clock_f != DL_NO_FONT ? DL_FONT_ID(display_layout.clock_f) : (uint16_t)ASSET_IOSEVKA_REGULAR_30)
+/* The band's other faces, centred in its rows: the 20px one where it fits
+ * (at 23 rows, the band's top, as before), else the small one (4 rows down
+ * at 23). */
+#define CLOCK_STATUS_FITS (CLOCK_BAND_H >= 23u)
+#define CLOCK_STATUS_Y    ((uint16_t)(CLOCK_Y + (CLOCK_BAND_H - 23u) / 2u))
+#define CLOCK_SMALL_Y     ((uint16_t)(CLOCK_Y + (CLOCK_BAND_H - 1u - 14u) / 2u))
 
 // Clock format: 1 = HH:MM:SS (per-second redraw of the changed cells), 0 = HH:MM.
 #ifndef DISPLAY_CLOCK_SHOW_SECONDS
@@ -639,12 +664,13 @@ static bool clock_relayout = false;
 #define AMPM_LETTER_H 7     /* Cozette capitals are 5x7 of ink                    */
 #define AMPM_GAP      2     /* rows between the stacked letters                  */
 #define AMPM_STACK_H  (2 * AMPM_LETTER_H + AMPM_GAP)   /* 16 of the face's 22 rows */
-#define AMPM_Y_OFF    ((22 - AMPM_STACK_H) / 2)         /* centred on the digits: 3 */
+#define AMPM_Y_OFF    ((CLOCK_BAND_H - 1u - AMPM_STACK_H) / 2u)   /* centred on the digits: 3 at 23 rows */
+#define AMPM_FITS     (CLOCK_BAND_H - 1u >= AMPM_STACK_H)         /* a face shorter than the stack goes without it */
 /* 12h sits 2px left of centre: 8 cells + glyph is 126 of 128 columns, and the
  * recessed panel's bezel clips the outermost ones (display.md). */
 #define AMPM_X_SHIFT  2
 #define COL_AMPM      0xCE79                            /* #CCCCCC light grey, RGB565: a hair off white -- mid grey (0x8410) was near-illegible at 5x7 */
-_Static_assert(AMPM_Y_OFF + AMPM_STACK_H <= CLOCK_BAND_H, "AM/PM stack must fit the clock band");
+_Static_assert((DL_CLOCK_H - 1 - AMPM_STACK_H) / 2 + AMPM_STACK_H <= DL_CLOCK_H, "AM/PM stack must fit the clock band");
 _Static_assert(8 * 15 + AMPM_W <= PANEL_WIDTH, "12:MM:SS plus the AM/PM glyph must fit the panel");
 
 /* 5x7 capitals after Cozette's shapes; bit 4 is the leftmost column. */
@@ -726,13 +752,13 @@ static void draw_playback(void) {
      * too wide for the panel, which only happens once a duration reaches an
      * hour. A 20px cell is 23 rows against this band's 22, so it borrows one
      * row from the 4-row gap below -- covered by the band clear. */
-    bool     big  = (n * FONT_STATUS_ADV) <= CLOCK_BW;
+    bool     big  = (n * FONT_STATUS_ADV) <= CLOCK_BW && CLOCK_STATUS_FITS;
     uint16_t font = big ? FONT_STATUS : FONT_SMALL;
     uint8_t  adv  = big ? FONT_STATUS_ADV : FONT_SMALL_ADV;
     /* A band too narrow even for the small face: queue_line cuts the run at
      * the band's edge, so the left of it shows. */
     uint16_t x0   = (uint16_t)(CLOCK_BX + (n * adv < CLOCK_BW ? (CLOCK_BW - n * adv) / 2 : 0));
-    uint16_t y    = big ? CLOCK_Y : (CLOCK_Y + 4);
+    uint16_t y    = big ? CLOCK_STATUS_Y : CLOCK_SMALL_Y;
 
     /* Ownership change (clock <-> playback): clear the whole band through
      * band_clear so every overlapping shadow is invalidated -- then tell the
@@ -1292,10 +1318,10 @@ void draw_clock(void) {
         if (dn > 12) dn = 12;
         date_str[dn] = '\0';
         /* The 20px face, or the small one in a band too narrow for it. */
-        bool     dbig  = dn * FONT_STATUS_ADV <= CLOCK_BW;
+        bool     dbig  = dn * FONT_STATUS_ADV <= CLOCK_BW && CLOCK_STATUS_FITS;
         uint16_t dfont = dbig ? FONT_STATUS : FONT_SMALL;
         uint16_t dadv  = dbig ? FONT_STATUS_ADV : FONT_SMALL_ADV;
-        uint16_t dy    = (uint16_t)(dbig ? CLOCK_Y : CLOCK_Y + 4);
+        uint16_t dy    = dbig ? CLOCK_STATUS_Y : CLOCK_SMALL_Y;
         uint16_t dx0   = (uint16_t)(CLOCK_BX + (dn * dadv < CLOCK_BW ? (CLOCK_BW - dn * dadv) / 2 : 0));
         if (ampm.shown) {   /* leaving 12h: the glyph cell is outside any run */
             band_clear(ampm.x, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
@@ -1334,19 +1360,20 @@ void draw_clock(void) {
      * glyph), then the 20px face, then the small one 4 rows down. Chosen by
      * the widest, so the face never changes at 9:59 -> 10:00. */
     uint8_t  nmax  = secs ? 8u : 5u;
-    uint16_t extra = twelve ? AMPM_W : 0;
+    bool     amp   = twelve && AMPM_FITS;   /* the stacked AM/PM, where the face is tall enough */
+    uint16_t extra = amp ? AMPM_W : 0;
     uint16_t cfont = FONT_CLOCK;
     uint16_t cy    = CLOCK_Y;
     if (nmax * lcd_font_advance(FONT_CLOCK) + extra > CLOCK_BW) {
-        cfont = (nmax * FONT_STATUS_ADV + extra <= CLOCK_BW) ? FONT_STATUS : FONT_SMALL;
-        if (cfont == FONT_SMALL) cy = (uint16_t)(CLOCK_Y + 4);
+        cfont = (nmax * FONT_STATUS_ADV + extra <= CLOCK_BW && CLOCK_STATUS_FITS) ? FONT_STATUS : FONT_SMALL;
+        cy    = cfont == FONT_SMALL ? CLOCK_SMALL_Y : CLOCK_STATUS_Y;
     }
     uint16_t adv = lcd_font_advance(cfont);
     if (!adv) return;
     uint8_t  n  = (uint8_t)strlen(time_str);   // 8/7 (with seconds) or 5/4
     uint16_t w  = (uint16_t)(n * adv + extra);
     uint16_t x0 = (uint16_t)(CLOCK_BX + (w < CLOCK_BW ? (CLOCK_BW - w) / 2 : 0));
-    if (twelve) x0 = (x0 > CLOCK_BX + AMPM_X_SHIFT) ? (uint16_t)(x0 - AMPM_X_SHIFT) : CLOCK_BX;
+    if (amp) x0 = (x0 > CLOCK_BX + AMPM_X_SHIFT) ? (uint16_t)(x0 - AMPM_X_SHIFT) : CLOCK_BX;
     uint16_t ax = (uint16_t)(x0 + n * adv);   // AM/PM cell origin: the run's end
 
     /* Retire a stale AM/PM glyph BEFORE the run is re-laid: when the run
@@ -1357,7 +1384,7 @@ void draw_clock(void) {
      * diff below still holds and the queue handles the moved run itself.
      * A letter flip (noon, midnight) needs no clear: the tile paints its
      * own background. */
-    if (ampm.shown && (!twelve || ampm.x != ax)) {
+    if (ampm.shown && (!amp || ampm.x != ax)) {
         band_clear(ampm.x, CLOCK_Y, AMPM_W, CLOCK_BAND_H);
         ampm.shown = false;
     }
@@ -1365,7 +1392,7 @@ void draw_clock(void) {
      * so spares queue_line's unknown-path full-width clear (~8 ms). */
     if (cleared) shadow_mark_empty(GQ_SLOT_CLOCK, cfont, x0, cy);
     queue_line(GQ_SLOT_CLOCK, cfont, x0, cy, time_str);
-    if (twelve && !ampm.shown) {
+    if (amp && !ampm.shown) {
         /* The cell may hold the tail of the run's OLD layout (24h -> 12h
          * shifts the digits left, off the glyph's columns). Clear it AFTER
          * queue_line: the new run does not cover these columns, so this
@@ -1376,7 +1403,7 @@ void draw_clock(void) {
         ampm.shown = true;
         ampm.x     = ax;
         ampm.pm    = pm;
-    } else if (twelve && ampm.pm != pm) {
+    } else if (amp && ampm.pm != pm) {
         draw_ampm(ax, CLOCK_Y, pm);    /* the tile paints its own background */
         ampm.pm = pm;
     }
@@ -1562,14 +1589,21 @@ bool display_blink(uint16_t period_ms) {
  * This replaced the date, which was redundant next to a computer clock. */
 #define CONN_ICON_X   (display_layout.conn_x)   /* default 29: 5px clear of the OS logo */
 #define CONN_ICON_Y   (display_layout.conn_y)
-#define CONN_ICON_W   79   /* 3x24 icons + gaps of 3 and 4 (BT nudged 1px right for optical balance) */
-#define CONN_ICON_H   24   /* was implicit in CONN_ICON_W while the icon was square */
+#define CONN_ICON_W   DL_CONN_W(&display_layout)   /* 3x24 icons + gaps of 3 and 4 (BT nudged 1px right for optical balance); or the layout's size */
+#define CONN_ICON_H   DL_CONN_H(&display_layout)   /* 24: was implicit in CONN_ICON_W while the icon was square */
 #define CONN_NUM_X    (CONN_ICON_X + CONN_ICON_W + 1)
-#define CONN_NUM_W    12
+#define CONN_NUM_W    DL_CONN_NW(&display_layout)   /* 12, or the layout's digit cell */
 
 // Paints the whole three-transport strip for the current mode.
 static void draw_conn_row(void) {
     if (DL_HIDDEN(DL_HIDE_CONN)) return;
+    if (display_layout.conn_w) {   /* the layout's own size (layout_store.h, kind 20) */
+        const dl_icon_t *ic = &dl_icon[connection_mode == CONN_MODE_BLUETOOTH ? DLI_CONN_BT
+                                       : connection_mode == CONN_MODE_2_4G    ? DLI_CONN_24G
+                                                                              : DLI_CONN_CABLE];
+        if (ic->w) { lcd_blit_flash(ic->addr, CONN_ICON_X, CONN_ICON_Y, ic->w, ic->h); lcd_blit_wait(); }
+        return;
+    }
     uint16_t id = (connection_mode == CONN_MODE_BLUETOOTH) ? ASSET_CONN_ROW_BT
                 : (connection_mode == CONN_MODE_2_4G)      ? ASSET_CONN_ROW_24G
                                                            : ASSET_CONN_ROW_CABLE;
@@ -1611,7 +1645,11 @@ static void draw_conn_number(bool force) {
     lcd_clear_rect(CONN_NUM_X, CONN_ICON_Y, CONN_NUM_W + 1, CONN_ICON_H);
     if (shown) {
         char s[2] = {shown, 0};
-        lcd_draw_flash_text(FONT_STATUS, CONN_NUM_X, (uint16_t)(CONN_ICON_Y + 2), s);
+        if (display_layout.conn_f != DL_NO_FONT) {   /* the layout's face, centred on the strip */
+            uint16_t f = DL_FONT_ID(display_layout.conn_f);
+            lcd_draw_flash_text(f, CONN_NUM_X, (uint16_t)(CONN_ICON_Y + (CONN_ICON_H - lcd_font_height(f)) / 2u), s);
+        } else
+            lcd_draw_flash_text(FONT_STATUS, CONN_NUM_X, (uint16_t)(CONN_ICON_Y + 2), s);
     }
 }
 
@@ -2071,7 +2109,7 @@ static void draw_battery(bool force) {
  * display_layout_valid() for any other. */
 #define DL_PADLOCK_FITS(lock_y, status_y) ((status_y) - (lock_y) >= 19)
 #define DL_STATUS_FITS(status_y)          ((status_y) + 23 <= 128)
-#define DL_CLOCK_ABOVE_LOCK(clock_y, lock_y) ((clock_y) + CLOCK_BAND_H <= (lock_y))
+#define DL_CLOCK_ABOVE_LOCK(clock_y, lock_y) ((clock_y) + DL_CLOCK_H <= (lock_y))
 _Static_assert(DL_PADLOCK_FITS(DL_DEF_LOCK_Y, DL_DEF_STATUS_Y), "lock band must contain the 16px padlock drawn at LOCK_Y+3");
 _Static_assert(DL_STATUS_FITS(DL_DEF_STATUS_Y), "battery band (20px face, 23-row cell) must fit the panel");
 _Static_assert(DL_CLOCK_ABOVE_LOCK(DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y), "clock band must not overlap the lock band");
@@ -2308,11 +2346,13 @@ _Static_assert(TEXT_FIT_LARGE_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SONG_LARGE_AD
  * band besides, above the clock, as Cozette's do (the cell is 14 rows too). */
 _Static_assert(TEXT_X + TEXT_FIT_LARGE_L0 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 0 on the panel");
 _Static_assert(TEXT_X2 + TEXT_FIT_LARGE_L1 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 1 on the panel");
-_Static_assert(LCD_FONT_SONG_LARGE_H + 1 == TEXT_LINE_H, "Large's cell is Cozette's 14 rows, the lines a row apart");
+_Static_assert(LCD_FONT_SONG_LARGE_H + 1 == TEXT_LINE_H_DEF, "Large's cell is Cozette's 14 rows, the lines a row apart");
 #define DL_TEXT_ON_PANEL(text_y) \
-    ((text_y) + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT && (text_y) + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT)
+    ((text_y) + TEXT_LINE_H_DEF + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT && (text_y) + TEXT_FONT_DY_DEF + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT)
 #define DL_TEXT_ABOVE_CLOCK(text_y, clock_y) \
-    ((text_y) + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H < (clock_y) && (text_y) + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H < (clock_y))
+    ((text_y) + TEXT_LINE_H_DEF + LCD_FONT_SONG_LARGE_H < (clock_y) && (text_y) + TEXT_FONT_DY_DEF + LCD_FONT_SONG_LARGE_H < (clock_y))
+/* The own face's rows: both lines in the band (DL_TEXT_ROWS is 2 x (cell + 1) + 1). */
+_Static_assert(2 * (40 + 1) + 1 <= 255, "DL_TEXT_ROWS in a byte at the largest cell layout_store.c takes");
 _Static_assert(DL_TEXT_ON_PANEL(DL_DEF_TEXT_Y), "Large's lines on the panel");
 _Static_assert(DL_TEXT_ABOVE_CLOCK(DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y), "and in the band, its gap row kept");
 
@@ -2340,6 +2380,7 @@ static char     text_buf[TEXT_LINES][DISPLAY_TEXT_MAX + 1] = {{0}};
 /* A single line in the 20px face: at most TEXT_BIG_MAX cells, and they fit
  * the band (at full width, every one of the eleven does). */
 static bool text_big_fits(void) {
+    if (TEXT_OWN_FACE) return false;   /* the layout's face draws the single line itself */
     uint16_t n = (uint16_t)strlen(text_buf[0]);
     return n <= TEXT_BIG_MAX && TEXT_X + n * FONT_STATUS_ADV + 2u <= TEXT_BW;
 }
@@ -3450,6 +3491,12 @@ static bool        ts_heavy_this_pass = false;
  * buffer kept whole, so queue_line diffs and shadows only what is shown. The
  * 20px single line doesn't come here: its face is the setting's in neither. */
 static void queue_text_line(uint8_t line, uint16_t x, uint16_t y) {
+    /* The layout's own face: the whole line, cut at the band's edge by
+     * queue_line. */
+    if (TEXT_OWN_FACE) {
+        queue_line(line, TEXT_OWN_FONT, x, y, text_buf[line]);
+        return;
+    }
     uint8_t face = kb_eeconfig_get_font();
     /* A band narrower than the panel steps down to the small face when the
      * line would be cut in the setting's (as the clock steps down); at full
@@ -3480,7 +3527,7 @@ static void text_line_step(uint8_t line) {
     if ((lay == TS_STATUS && !conn_status_str) || ((lay == TS_TWO || lay == TS_ONE) && !text_present)) lay = TS_NONE;
     if (line == 0) band_mark_painted(lay == TS_STATUS ? conn_status_kind : lay == TS_NONE ? BAND_NONE : BAND_TEXT);
     if (lay == TS_STATUS) {
-        if (line == 0) queue_line(0, FONT_STATUS, TEXT_BX + CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
+        if (line == 0) queue_line(0, TEXT_STATUS_FONT, TEXT_BX + CONN_STATUS_X, TEXT_STATUS_Y, conn_status_str);
         else retire_line(1);
     } else if (lay == TS_TWO) {
         if (line == 0) queue_text_line(0, TEXT_BX + TEXT_X, TEXT_Y);
@@ -3608,7 +3655,8 @@ static void draw_text_slot(bool force) {
          * against the icon's +5.5, so the ideal y is fractional (x.5). It is
          * rounded up, leaving the icon 0.5px high -- the direction optical
          * centring prefers, and the only alternative is 0.5px low. */
-        if (text_buf[1][0])                       icon_y = TEXT_Y;
+        if (TEXT_OWN_FACE)                        icon_y = TEXT_Y + (text_buf[1][0] ? 0u : TEXT_FONT_DY) + TEXT_OWN_ICON_DY;
+        else if (text_buf[1][0])                  icon_y = TEXT_Y;
         else if (text_big_fits())
                                                   icon_y = TEXT_Y + TEXT_BIG_DY + 5;
         else                                      icon_y = TEXT_Y + TEXT_FONT_DY;
@@ -3639,7 +3687,7 @@ static void draw_text_slot(bool force) {
     /* --- text ------------------------------------------------------------- */
     band_mark_painted(conn_status_str ? conn_status_kind : text_present ? BAND_TEXT : BAND_NONE);
     if (conn_status_str) {
-        queue_line(0, FONT_STATUS, TEXT_BX + CONN_STATUS_X, TEXT_Y + TEXT_BIG_DY, conn_status_str);
+        queue_line(0, TEXT_STATUS_FONT, TEXT_BX + CONN_STATUS_X, TEXT_STATUS_Y, conn_status_str);
         retire_line(1);
     } else if (text_present && text_buf[1][0]) {
         queue_text_line(0, TEXT_BX + TEXT_X,  TEXT_Y);
@@ -4095,11 +4143,11 @@ bool display_layout_valid(const display_layout_t *l) {
 bool display_layout_rect(const display_layout_t *l, uint8_t i, uint8_t *x, uint8_t *y, uint8_t *w, uint8_t *h) {
     uint8_t rx, ry, rw, rh;
     switch (i) {
-        case 0: if (l->hidden & DL_HIDE_OS) return false;     rx = l->os_x; ry = l->os_y; rw = 24; rh = 24; break;
+        case 0: if (l->hidden & DL_HIDE_OS) return false;     rx = l->os_x; ry = l->os_y; rw = DL_OS_SIDE(l); rh = DL_OS_SIDE(l); break;
         case 1: if (l->hidden & DL_HIDE_CONN) return false;   rx = l->conn_x; ry = l->conn_y;
-                rw = CONN_ICON_W + 1u + CONN_NUM_W + 1u; rh = CONN_ICON_H; break;
-        case 2: if (l->hidden & DL_HIDE_TEXT) return false;   rx = l->text_x;  ry = l->text_y;  rw = l->text_w;  rh = DL_TEXT_H; break;
-        case 3: if (l->hidden & DL_HIDE_CLOCK) return false;  rx = l->clock_x; ry = l->clock_y; rw = l->clock_w; rh = DL_CLOCK_H; break;
+                rw = (uint8_t)(DL_CONN_W(l) + 1u + DL_CONN_NW(l) + 1u); rh = DL_CONN_H(l); break;
+        case 2: if (l->hidden & DL_HIDE_TEXT) return false;   rx = l->text_x;  ry = l->text_y;  rw = l->text_w;  rh = DL_TEXT_ROWS(l); break;
+        case 3: if (l->hidden & DL_HIDE_CLOCK) return false;  rx = l->clock_x; ry = l->clock_y; rw = l->clock_w; rh = DL_CLOCK_ROWS(l); break;
         case 4: if (l->hidden & DL_HIDE_LOCK) return false;   rx = l->lock_x; ry = l->lock_y; rw = l->lock_w; rh = DL_LOCK_H; break;
         case 5: if (l->hidden & DL_HIDE_STATUS) return false; rx = l->status_x; ry = l->status_y; rw = l->status_w; rh = DL_STATUS_H; break;
         default: return false;

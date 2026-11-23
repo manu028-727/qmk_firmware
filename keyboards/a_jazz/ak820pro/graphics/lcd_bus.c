@@ -15,6 +15,7 @@
 #include "quantum.h"
 #include "gpio.h"
 #include "lcd_bus.h"
+#include "layout_store.h"        /* the layout's own faces: flash_asset() answers their ids */
 #include "../rtc/rtc.h"
 #include "../ak820pro.h"
 #include "../menu/panel_owner.h"   /* op 27's sticky failure bits (dev builds) */
@@ -891,6 +892,8 @@ uint8_t flash_assets_count(void) { return fa_count; }
 
 const flash_asset_t *flash_asset(uint16_t id) {
     if (LCD_FONT_IS_SONG(id)) return NULL;   /* the pseudo fonts: not the index's, whatever it holds */
+    /* The layout's own faces (layout_store.h): its slot, not the blob's index. */
+    if (id >= DL_FONT_ID0 && id < DL_FONT_ID0 + DL_FONT_MAX) return (uint16_t)(id - DL_FONT_ID0) < dl_font_n ? &dl_font[id - DL_FONT_ID0] : NULL;
     for (uint8_t i = 0; i < fa_count; i++)
         if (fa_tab[i].id == id) return &fa_tab[i];
     return NULL;

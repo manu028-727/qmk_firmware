@@ -15,8 +15,11 @@
 
 #define LOAD_CHUNK 16u
 
-dl_custom_t dl_custom[DL_CUSTOM_MAX];
-uint8_t     dl_custom_n;
+dl_custom_t   dl_custom[DL_CUSTOM_MAX];
+uint8_t       dl_custom_n;
+flash_asset_t dl_font[DL_FONT_MAX];
+uint8_t       dl_font_n;
+dl_icon_t     dl_icon[DLI_MAX];
 
 typedef enum { LS_IDLE = 0, LS_HEADER, LS_CRC, LS_PICK, LS_RECORDS, LS_COMMIT } ls_state_t;
 
@@ -37,6 +40,9 @@ static struct {
     display_layout_t pend;
     dl_custom_t      pend_c[DL_CUSTOM_MAX];
     uint8_t          pend_n;
+    flash_asset_t    pend_f[DL_FONT_MAX];
+    uint8_t          pend_fn;
+    dl_icon_t        pend_i[DLI_MAX];
     uint8_t          seen;    /* built-in kinds already given (bit per kind) */
 } ls;
 
@@ -52,8 +58,59 @@ static bool rects_meet(uint8_t ax, uint8_t ay, uint8_t aw, uint8_t ah, uint8_t b
     return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
 }
 
+/* A face index from a record (DL_NO_FONT: none) that covers [lo, hi]:
+ * its cell into *cw and *ch. */
+static bool font_ok(uint8_t f, uint8_t lo, uint8_t hi, uint8_t *cw, uint8_t *ch) {
+    if (f == DL_NO_FONT) return true;
+    if (f >= ls.pend_fn) return false;
+    const flash_asset_t *a = &ls.pend_f[f];
+    if (a->first > lo || (uint16_t)a->first + a->count <= hi) return false;
+    *cw = a->cell_w; *ch = a->cell_h;
+    return true;
+}
+
+/* The sizes the records asked for, checked and put into the pending layout:
+ * the faces cover what each element draws, and a set of icons is whole. */
+static bool sizes_ok(void) {
+    display_layout_t *l = &ls.pend;
+    uint8_t cw = 0, ch = 0;
+    if (!font_ok(l->clock_f, '0', ':', &cw, &ch)) return false;
+    if (l->clock_f != DL_NO_FONT) {
+        if (ch < 14u || ch > 60u) return false;   /* the date's small face fits the band */
+        l->clock_ch = ch;
+    }
+    if (!font_ok(l->text_f, 0x20, 0x7E, &cw, &ch)) return false;
+    if (l->text_f != DL_NO_FONT) {
+        if (ch < 12u || ch > 40u) return false;   /* the transport icon's 12 rows beside line 0 */
+        l->text_lh = ch;
+    }
+    /* The OS logo: none of its icons, or all three, square and alike. */
+    const dl_icon_t *ic = ls.pend_i;
+    if (ic[DLI_APPLE].w || ic[DLI_WINDOWS].w || ic[DLI_LINUX].w) {
+        for (uint8_t i = DLI_APPLE; i <= DLI_LINUX; i++)
+            if (ic[i].w != ic[DLI_APPLE].w || ic[i].h != ic[DLI_APPLE].w) return false;
+        l->os_s = ic[DLI_APPLE].w;
+    }
+    /* The strip: none, or all three alike, with a digit face no taller. */
+    if (ic[DLI_CONN_CABLE].w || ic[DLI_CONN_BT].w || ic[DLI_CONN_24G].w) {
+        for (uint8_t i = DLI_CONN_CABLE; i <= DLI_CONN_24G; i++)
+            if (ic[i].w != ic[DLI_CONN_CABLE].w || ic[i].h != ic[DLI_CONN_CABLE].h) return false;
+        if (l->conn_f == DL_NO_FONT) return false;
+        l->conn_w = ic[DLI_CONN_CABLE].w;
+        l->conn_h = ic[DLI_CONN_CABLE].h;
+    }
+    if (!font_ok(l->conn_f, '1', '3', &cw, &ch)) return false;
+    if (l->conn_f != DL_NO_FONT) {
+        if (ch > DL_CONN_H(l)) return false;
+        l->conn_nw = cw;
+        if ((uint16_t)DL_CONN_W(l) + cw + 2u > 128u) return false;   /* the strip and its digit on the panel */
+    }
+    return true;
+}
+
 /* Every rule a parsed layout must meet before it is drawn. */
 static bool place_ok(void) {
+    if (!sizes_ok()) return false;
     if (!display_layout_valid(&ls.pend)) return false;
     for (uint8_t i = 0; i < ls.pend_n; i++) {
         const dl_custom_t *c = &ls.pend_c[i];
@@ -82,6 +139,11 @@ static bool take_record(const uint8_t *r, uint8_t s) {
         ls.seen |= bit;
         bool hide = (flags & 1u) != 0;
         display_layout_t *l = &ls.pend;
+        uint8_t f = p0 ? (uint8_t)(p0 - 1u) : DL_NO_FONT;   /* the element's face, if it names one */
+        if (p0 && (kind == DLK_OS || kind == DLK_LOCK || kind == DLK_STATUS)) return false;
+        if (kind == DLK_CONN) l->conn_f = f;
+        if (kind == DLK_TEXT) l->text_f = f;
+        if (kind == DLK_CLOCK) l->clock_f = f;
         switch (kind) {
             case DLK_OS:     l->os_x = x; l->os_y = y; if (hide) l->hidden |= DL_HIDE_OS; break;
             case DLK_CONN:   l->conn_x = x; l->conn_y = y; if (hide) l->hidden |= DL_HIDE_CONN; break;
@@ -91,6 +153,32 @@ static bool take_record(const uint8_t *r, uint8_t s) {
             case DLK_LOCK:   l->lock_x = x; l->lock_y = y; l->lock_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_LOCK; break;
             case DLK_STATUS: l->status_x = x; l->status_y = y; l->status_w = band_w(x, w); if (hide) l->hidden |= DL_HIDE_STATUS; break;
         }
+        return true;
+    }
+    if (kind == DLK_FONT) {
+        /* p1 glyphs from p0, each w x h. */
+        if (ls.pend_fn >= DL_FONT_MAX || !w || !h || w > 128u || h > 128u || !p1 || p0 < 0x20u || (uint16_t)p0 + p1 > 0x7Fu)
+            return false;
+        uint32_t flen = (uint32_t)w * h * 2u * p1;
+        if (off > ls.total[s] || flen > ls.total[s] - off) return false;
+        flash_asset_t *a = &ls.pend_f[ls.pend_fn];
+        memset(a, 0, sizeof *a);
+        a->id     = DL_FONT_ID(ls.pend_fn);
+        a->off    = slot_base(s) + off - FLASH_ASSET_BASE;
+        a->fmt    = 1;
+        a->w      = w; a->h = h;
+        a->cell_w = w; a->cell_h = h;
+        a->first  = p0; a->count = p1;
+        ls.pend_fn++;
+        return true;
+    }
+    if (kind == DLK_ICON) {
+        if (p0 >= DLI_MAX || ls.pend_i[p0].w || !w || !h || w > 128u || h > 128u) return false;
+        uint32_t ilen = (uint32_t)w * h * 2u;
+        if (off > ls.total[s] || ilen > ls.total[s] - off) return false;
+        ls.pend_i[p0].addr = slot_base(s) + off;
+        ls.pend_i[p0].w    = w;
+        ls.pend_i[p0].h    = h;
         return true;
     }
     if (kind != DLK_IMAGE && kind != DLK_LABEL && kind != DLK_ANIM) return false;
@@ -184,6 +272,8 @@ static void step(void) {
                 /* Nothing to take: the default, and why. */
                 ls.pend = (display_layout_t)DISPLAY_LAYOUT_DEFAULT;
                 ls.pend_n = 0;
+                ls.pend_fn = 0;
+                memset(ls.pend_i, 0, sizeof ls.pend_i);
                 if (!ls.err) ls.err = DLE_NONE;   /* else the last refusal's reason */
                 ls.slot  = 0xFFu;
                 ls.state = LS_COMMIT;
@@ -193,6 +283,8 @@ static void step(void) {
             ls.tried |= (uint8_t)(1u << best);
             ls.pend   = (display_layout_t)DISPLAY_LAYOUT_DEFAULT;
             ls.pend_n = 0;
+            ls.pend_fn = 0;
+            memset(ls.pend_i, 0, sizeof ls.pend_i);
             ls.seen   = 0;
             ls.pos    = 0;
             ls.state  = LS_RECORDS;
@@ -218,6 +310,9 @@ static void step(void) {
             display_layout = ls.pend;
             memcpy(dl_custom, ls.pend_c, sizeof dl_custom);
             dl_custom_n = ls.pend_n;
+            memcpy(dl_font, ls.pend_f, sizeof dl_font);
+            dl_font_n   = ls.pend_fn;
+            memcpy(dl_icon, ls.pend_i, sizeof dl_icon);
             active      = ls.slot;
             active_seq  = active == 0xFFu ? 0 : ls.seq[active];
             last_err    = ls.err;
@@ -234,6 +329,8 @@ void layout_store_boot(void) {
         ls.state       = LS_IDLE;
         display_layout = (display_layout_t)DISPLAY_LAYOUT_DEFAULT;
         dl_custom_n    = 0;
+        dl_font_n      = 0;
+        memset(dl_icon, 0, sizeof dl_icon);
     }
 }
 

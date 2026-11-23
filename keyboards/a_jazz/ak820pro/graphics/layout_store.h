@@ -25,6 +25,15 @@
  *          18 animation: p0 frames (1-255) at off: first p0 delays (u8, in
  *             10 ms, 0 meaning 100 ms), padded to even, then the frames, each
  *             w x h RGB565 pixels as an image's
+ *          19 font: p1 glyphs from character p0, each a w x h tile of RGB565
+ *             pixels (white on black, as the asset blob's), one after another
+ *          20 icon: a built-in's image at another size, w x h pixels; p0 says
+ *             which (DLI_*). The OS logo takes all three of its own or none,
+ *             square and alike; the transport strip all three of its own or
+ *             none, alike, with a slot digit face (the conn record's p0)
+ *   sizes (Manuel, 11-23): a built-in record's p0 is a font record's place
+ *   among the fonts plus one (0: today's face): the clock's digits, the song
+ *   lines, the transport strip's slot digit.
  * A built-in a layout leaves out keeps its default place.
  *
  * Every rule is checked before anything is used (display_layout_valid(), the
@@ -33,6 +42,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "graphics/lcd_bus.h"
 
 #define LAYOUT_SLOT_A     0xE00000u
 #define LAYOUT_SLOT_B     0xF00000u
@@ -40,9 +50,27 @@
 #define LAYOUT_MAGIC      0x314C4B41u   /* 'AKL1' */
 #define LAYOUT_VERSION    1u
 #define LAYOUT_META_MAX   4096u
-#define LAYOUT_RECORDS_MAX 16u
+#define LAYOUT_RECORDS_MAX 32u   /* six built-ins, eight widgets, the faces and icons of the sizes */
 
-enum { DLK_OS = 1, DLK_CONN, DLK_TEXT, DLK_CLOCK, DLK_LOCK, DLK_STATUS, DLK_IMAGE = 16, DLK_LABEL = 17, DLK_ANIM = 18 };
+enum { DLK_OS = 1, DLK_CONN, DLK_TEXT, DLK_CLOCK, DLK_LOCK, DLK_STATUS, DLK_IMAGE = 16, DLK_LABEL = 17, DLK_ANIM = 18,
+       DLK_FONT = 19, DLK_ICON = 20 };
+
+/* The layout's own faces: flash_asset() answers DL_FONT_ID(i) from here, so
+ * every glyph path draws them as it draws the blob's. Above 0xFF (no blob
+ * index holds one) and away from lcd_bus.h's pseudo fonts. */
+#define DL_FONT_MAX   4u
+#define DL_FONT_ID0   0x0900u
+#define DL_FONT_ID(i) ((uint16_t)(DL_FONT_ID0 + (i)))
+extern flash_asset_t dl_font[DL_FONT_MAX];
+extern uint8_t       dl_font_n;
+
+/* The built-ins' images at the layout's sizes (w 0: the blob's own). */
+enum { DLI_APPLE = 0, DLI_WINDOWS, DLI_LINUX, DLI_CONN_CABLE, DLI_CONN_BT, DLI_CONN_24G, DLI_MAX };
+typedef struct {
+    uint32_t addr;   /* absolute in the external flash */
+    uint8_t  w, h;
+} dl_icon_t;
+extern dl_icon_t dl_icon[DLI_MAX];
 
 /* A custom widget, as drawn: addr is absolute in the external flash. An
  * animation's len is its frame count, and addr its delay table's start. */
