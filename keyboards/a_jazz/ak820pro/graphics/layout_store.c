@@ -93,7 +93,7 @@ static bool take_record(const uint8_t *r, uint8_t s) {
         }
         return true;
     }
-    if (kind != DLK_IMAGE && kind != DLK_LABEL) return false;
+    if (kind != DLK_IMAGE && kind != DLK_LABEL && kind != DLK_ANIM) return false;
     if (ls.pend_n >= DL_CUSTOM_MAX) return false;
     dl_custom_t *c = &ls.pend_c[ls.pend_n];
     memset(c, 0, sizeof *c);
@@ -102,6 +102,10 @@ static bool take_record(const uint8_t *r, uint8_t s) {
     if (kind == DLK_IMAGE) {
         c->w = w; c->h = h;
         len  = (uint32_t)w * h * 2u;
+    } else if (kind == DLK_ANIM) {
+        if (!p0) return false;
+        c->w = w; c->h = h; c->len = p0;
+        len  = (((uint32_t)p0 + 1u) & ~1u) + (uint32_t)p0 * w * h * 2u;
     } else {
         uint16_t font = p0 ? ASSET_IOSEVKA_MEDIUM_20 : ASSET_IOSEVKA_MEDIUM_13;
         uint16_t adv = lcd_font_advance(font), fh = lcd_font_height(font);

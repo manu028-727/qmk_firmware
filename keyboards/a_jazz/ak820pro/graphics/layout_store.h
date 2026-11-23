@@ -22,6 +22,9 @@
  *          four bands take a width too, w, 0 meaning to the right edge)
  *          16 image: w x h RGB565 pixels, big-endian, row by row, at off
  *          17 label: p1 characters at off, p0 the face (0 small 6x14, 1 20px)
+ *          18 animation: p0 frames (1-255) at off: first p0 delays (u8, in
+ *             10 ms, 0 meaning 100 ms), padded to even, then the frames, each
+ *             w x h RGB565 pixels as an image's
  * A built-in a layout leaves out keeps its default place.
  *
  * Every rule is checked before anything is used (display_layout_valid(), the
@@ -39,9 +42,10 @@
 #define LAYOUT_META_MAX   4096u
 #define LAYOUT_RECORDS_MAX 16u
 
-enum { DLK_OS = 1, DLK_CONN, DLK_TEXT, DLK_CLOCK, DLK_LOCK, DLK_STATUS, DLK_IMAGE = 16, DLK_LABEL = 17 };
+enum { DLK_OS = 1, DLK_CONN, DLK_TEXT, DLK_CLOCK, DLK_LOCK, DLK_STATUS, DLK_IMAGE = 16, DLK_LABEL = 17, DLK_ANIM = 18 };
 
-/* A custom widget, as drawn: addr is absolute in the external flash. */
+/* A custom widget, as drawn: addr is absolute in the external flash. An
+ * animation's len is its frame count, and addr its delay table's start. */
 typedef struct {
     uint8_t  kind, x, y, w, h, font, len, pad;
     uint32_t addr;

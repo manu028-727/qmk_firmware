@@ -481,6 +481,7 @@ static void debug_done_note(void);          // C10: the debug page's completed g
 static void conn_status_update(void);   // the band's wireless status, before the restore's text stage
 static bool custom_paint_step(void);    // M3: one piece of the layout's images and labels
 static void custom_paint_restart(void); // ...from the first, after a restore
+static bool anim_paint_step(void);      // ...and one strip of a due animation frame
 
 /* ---- Playback position ----------------------------------------------------
  *
@@ -3238,7 +3239,7 @@ void display_blit_pump(void) {
     }
 
     /* The layout's own widgets, once the bands' queues are idle (M3). */
-    if (!gq_pending() && !lq_pending() && !lcd_blit_busy() && custom_paint_step()) {
+    if (!gq_pending() && !lq_pending() && !lcd_blit_busy() && (custom_paint_step() || anim_paint_step())) {
         blocked = false;
         return;
     }
@@ -4119,7 +4120,52 @@ bool display_layout_rect(const display_layout_t *l, uint8_t i, uint8_t *x, uint8
 static uint8_t cw_i   = CW_IDLE;   /* the widget being painted */
 static uint8_t cw_row = 0;         /* its next row (image) or character (label) */
 
-static void custom_paint_restart(void) { cw_i = dl_custom_n ? 0 : CW_IDLE; cw_row = 0; }
+/* The animations (kind 18): each plays its frames from the flash, a strip a
+ * pass like an image, the next frame when its delay is up. RAM per widget:
+ * the frame shown, the next row of the frame being painted (CW_IDLE between
+ * frames), and when the next frame is due. Never under another owner, a
+ * restore or a write to the chip, and not while the panel is off. */
+static uint8_t  an_frame[DL_CUSTOM_MAX];
+static uint8_t  an_row[DL_CUSTOM_MAX];
+static uint32_t an_due[DL_CUSTOM_MAX];
+
+static void anim_restart(void) {
+    uint32_t now = timer_read32();
+    for (uint8_t i = 0; i < DL_CUSTOM_MAX; i++) { an_frame[i] = 0; an_row[i] = CW_IDLE; an_due[i] = now; }
+}
+
+static void custom_paint_restart(void) { cw_i = dl_custom_n ? 0 : CW_IDLE; cw_row = 0; anim_restart(); }
+
+/* One strip of one animation; false when none was due. */
+static bool anim_paint_step(void) {
+    if (cw_i != CW_IDLE || !splash_cleared || !display_powered || flash_busy()) return false;
+    uint32_t now = timer_read32();
+    for (uint8_t i = 0; i < dl_custom_n; i++) {
+        const dl_custom_t *c = &dl_custom[i];
+        if (c->kind != DLK_ANIM || !c->len) continue;
+        if (an_row[i] == CW_IDLE) {
+            if ((int32_t)(now - an_due[i]) < 0) continue;
+            an_row[i] = 0;   /* the frame starts */
+        }
+        uint32_t fbytes = (uint32_t)c->w * c->h * 2u;
+        uint32_t base   = c->addr + (((uint32_t)c->len + 1u) & ~1u) + (uint32_t)an_frame[i] * fbytes;
+        uint16_t rows   = (uint16_t)(CW_STRIP_BYTES / ((uint16_t)c->w * 2u));
+        if (!rows) rows = 1;
+        if (rows > (uint16_t)(c->h - an_row[i])) rows = (uint16_t)(c->h - an_row[i]);
+        /* Armed, not waited for: the pump comes back once the bus is free. */
+        lcd_blit_flash(base + (uint32_t)an_row[i] * c->w * 2u, c->x, (uint16_t)(c->y + an_row[i]), c->w, rows);
+        an_row[i] = (uint8_t)(an_row[i] + rows);
+        if (an_row[i] >= c->h) {
+            uint8_t d = 0;
+            flash_read_bytes(c->addr + an_frame[i], &d, 1);
+            an_row[i]   = CW_IDLE;
+            an_due[i]   = now + (d ? (uint32_t)d * 10u : 100u);
+            an_frame[i] = (uint8_t)((an_frame[i] + 1u) % c->len);
+        }
+        return true;
+    }
+    return false;
+}
 
 /* One piece; false when there was nothing to paint. */
 static bool custom_paint_step(void) {
@@ -4127,7 +4173,9 @@ static bool custom_paint_step(void) {
     if (cw_i >= dl_custom_n) { cw_i = CW_IDLE; return false; }
     const dl_custom_t *c = &dl_custom[cw_i];
     bool done;
-    if (c->kind == DLK_IMAGE) {
+    if (c->kind == DLK_ANIM) {
+        done = true;   /* anim_paint_step() paints it, from its first frame */
+    } else if (c->kind == DLK_IMAGE) {
         uint16_t rows = (uint16_t)(CW_STRIP_BYTES / ((uint16_t)c->w * 2u));
         if (!rows) rows = 1;
         if (rows > (uint16_t)(c->h - cw_row)) rows = (uint16_t)(c->h - cw_row);
