@@ -9,6 +9,7 @@
 #include "graphics/batt_text.h"   /* the battery readout's text (P4) */
 #include "graphics/text_fit.h"    /* the song text's budgets and cut, per face (B6) */
 #include "lcd_bus.h"
+#include "graphics/display_layout.h"   /* the dashboard's origins as data (M1) */
 
 #include <string.h>
 #include <stdio.h>
@@ -152,7 +153,7 @@ _Static_assert(PANEL_WIDTH <= 255, "draw_battery() keeps x and widths in a byte"
 #define TEXT_BIG_MAX    11
 
 // Bottom row: y position of the wireless status line.
-#define STATUS_Y 105
+#define STATUS_Y (display_layout.status_y)
 
 /* volatile: read every GPT tick in ISR context (display_backlight_tick),
  * written from the main loop -- same discipline as bkl_level/ind_*. Benign
@@ -171,6 +172,9 @@ static bool mac_mode = false;
 /* The Win/Mac logo's asset: Apple's, or on the Win side Windows' or (the
  * menu's "Win icon", Manuel 11-23) Linux's, when the provisioned assets
  * carry it; an older blob without it keeps the Windows logo. */
+/* The OS logo's origin (display_layout.h). */
+#define OS_LOGO_X (display_layout.os_x)
+#define OS_LOGO_Y (display_layout.os_y)
 static uint16_t os_logo_id(void) {
     if (mac_mode) return ASSET_APPLE_ICON_24X24;
     if (kb_eeconfig_get_os_linux() && flash_asset(ASSET_WINDOWS_LINUX_ICON_24X24)) return ASSET_WINDOWS_LINUX_ICON_24X24;
@@ -422,7 +426,7 @@ static bool display_backlight_init(void) {
  * Fn+D camera page: digits . : % V < > -), and it draws no descender. If you
  * ever draw general text at this size, regenerate the atlas at its full 15x34
  * cell and hand these 12 rows back -- do not try to fix it by nudging offsets. */
-#define CLOCK_Y 58
+#define CLOCK_Y (display_layout.clock_y)
 /* 23, not the clock cell's 22: the playback readout uses the 20px face, whose
  * cell is 23 rows, borrowing one row from the 4-row gap below. The clear rect
  * must cover everything either owner can draw, or switching between them
@@ -1376,7 +1380,7 @@ static void debug_restore_step(void) {
     switch (step - DBG_CLEAR_BANDS) {
         case 1:
             splash_cleared = true;
-            lcd_draw_flash_image(os_logo_id(), 0, 0);
+            lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
             logo_os_stale = false;
             break;
         case 2:
@@ -1510,7 +1514,8 @@ bool display_blink(uint16_t period_ms) {
  * in assets/ from the original three icons.
  *
  * This replaced the date, which was redundant next to a computer clock. */
-#define CONN_ICON_X   29   /* 5px clear of the OS logo: it shows a different kind of thing */
+#define CONN_ICON_X   (display_layout.conn_x)   /* default 29: 5px clear of the OS logo */
+#define CONN_ICON_Y   (display_layout.conn_y)
 #define CONN_ICON_W   79   /* 3x24 icons + gaps of 3 and 4 (BT nudged 1px right for optical balance) */
 #define CONN_ICON_H   24   /* was implicit in CONN_ICON_W while the icon was square */
 #define CONN_NUM_X    (CONN_ICON_X + CONN_ICON_W + 1)
@@ -1521,7 +1526,7 @@ static void draw_conn_row(void) {
     uint16_t id = (connection_mode == CONN_MODE_BLUETOOTH) ? ASSET_CONN_ROW_BT
                 : (connection_mode == CONN_MODE_2_4G)      ? ASSET_CONN_ROW_24G
                                                            : ASSET_CONN_ROW_CABLE;
-    lcd_draw_flash_image(id, CONN_ICON_X, 0);
+    lcd_draw_flash_image(id, CONN_ICON_X, CONN_ICON_Y);
 }
 
 // Channel digit next to the connection icon, blinking to show link state:
@@ -1555,10 +1560,10 @@ static void draw_conn_number(bool force) {
     if (!force && shown == last_shown) return;
     last_shown = shown;
 
-    lcd_clear_rect(CONN_NUM_X, 0, CONN_NUM_W + 1, CONN_ICON_H);
+    lcd_clear_rect(CONN_NUM_X, CONN_ICON_Y, CONN_NUM_W + 1, CONN_ICON_H);
     if (shown) {
         char s[2] = {shown, 0};
-        lcd_draw_flash_text(FONT_STATUS, CONN_NUM_X, 2, s);
+        lcd_draw_flash_text(FONT_STATUS, CONN_NUM_X, (uint16_t)(CONN_ICON_Y + 2), s);
     }
 }
 
@@ -1981,7 +1986,7 @@ static void draw_battery(bool force) {
 // disable most hotkeys and nobody would enable it on purpose -- so the label is
 // for the only context where the feature is meaningful. The padlock conveys
 // "disabled"; the label says which key.
-#define LOCK_Y      83
+#define LOCK_Y      (display_layout.lock_y)
 #define LOCK_PAD_X  4
 /* 16px padlock inside the 23px band -> LOCK_Y+3 .. LOCK_Y+18, which the clear
  * rect (STATUS_Y - LOCK_Y = 22 since 10-28) fully covers. It did NOT while the band was
@@ -1992,9 +1997,15 @@ static void draw_battery(bool force) {
 /* Layout invariants the panel budget depends on (phase 3.3). The padlock one
  * was a real bug: while the lock band was briefly 17px, the 16px padlock at
  * LOCK_Y+3 overhung the band's clear rect and stayed lit forever. */
-_Static_assert(STATUS_Y - LOCK_Y >= 19, "lock band must contain the 16px padlock drawn at LOCK_Y+3");
-_Static_assert(STATUS_Y + 23 <= 128, "battery band (20px face, 23-row cell) must fit the panel");
-_Static_assert(CLOCK_Y + CLOCK_BAND_H <= LOCK_Y, "clock band must not overlap the lock band");
+/* The origins are data since M1 (display_layout.h): each invariant is a
+ * predicate over them, asserted here for the default layout and checked by
+ * display_layout_valid() for any other. */
+#define DL_PADLOCK_FITS(lock_y, status_y) ((status_y) - (lock_y) >= 19)
+#define DL_STATUS_FITS(status_y)          ((status_y) + 23 <= 128)
+#define DL_CLOCK_ABOVE_LOCK(clock_y, lock_y) ((clock_y) + CLOCK_BAND_H <= (lock_y))
+_Static_assert(DL_PADLOCK_FITS(DL_DEF_LOCK_Y, DL_DEF_STATUS_Y), "lock band must contain the 16px padlock drawn at LOCK_Y+3");
+_Static_assert(DL_STATUS_FITS(DL_DEF_STATUS_Y), "battery band (20px face, 23-row cell) must fit the panel");
+_Static_assert(DL_CLOCK_ABOVE_LOCK(DL_DEF_CLOCK_Y, DL_DEF_LOCK_Y), "clock band must not overlap the lock band");
 #define LOCK_CAP_X  20                    // "CAPS" 4 glyphs = 40px -> 20..59
 #define LOCK_WIN_X  64                    // "WIN"  3 glyphs = 30px -> 64..93
 #define LOCK_SLOT3_X 96                   // shared: "FN" 20px, "SCR" 30px -> 96..125
@@ -2041,8 +2052,11 @@ static void draw_padlock(uint16_t x, uint16_t y, uint16_t col) {
  * LOCK_Y back to 82 and the clock with it. */
 #define FONT_STATUS_ROW0_BLANK 1          /* rows at the 20px cell's top no glyph inks */
 #define LOCK_LABEL_INK_END     18         /* the labels' and padlock's last inked row */
-_Static_assert(LOCK_Y + LOCK_TXT_H <= STATUS_Y + FONT_STATUS_ROW0_BLANK, "lock band text cells may reach only the battery strip's blank row");
-_Static_assert(LOCK_Y + LOCK_LABEL_INK_END < STATUS_Y && LOCK_PAD_Y + LOCK_PAD_H - 1 <= LOCK_Y + LOCK_LABEL_INK_END, "no lock ink in the battery strip");
+#define DL_LOCK_CELLS_FIT(lock_y, status_y) ((lock_y) + LOCK_TXT_H <= (status_y) + FONT_STATUS_ROW0_BLANK)
+#define DL_LOCK_INK_FITS(lock_y, status_y) \
+    ((lock_y) + LOCK_LABEL_INK_END < (status_y) && (lock_y) + 3 + LOCK_PAD_H - 1 <= (lock_y) + LOCK_LABEL_INK_END)
+_Static_assert(DL_LOCK_CELLS_FIT(DL_DEF_LOCK_Y, DL_DEF_STATUS_Y), "lock band text cells may reach only the battery strip's blank row");
+_Static_assert(DL_LOCK_INK_FITS(DL_DEF_LOCK_Y, DL_DEF_STATUS_Y), "no lock ink in the battery strip");
 
 static bool        shown_pad = false, shown_caps = false, shown_gui = false;
 static const char *shown_sl3 = NULL;
@@ -2185,8 +2199,7 @@ static bool draw_locks_staged(bool first) {
 // The whole payload fits one raw-HID packet: 12 characters at a 10px advance
 // fills the 128px band, against ~27 usable bytes per packet. So there is no
 // framing, no offsets and no partial-render window to design around.
-#define TEXT_Y        27
-#define TEXT_H        (CLOCK_Y - TEXT_Y)     // 31 rows, 27-57
+#define TEXT_Y        (display_layout.text_y)
 #define TEXT_ICON_W   12
 #define TEXT_ICON_GAP 2   /* tightened with the denser face: one more glyph */
 #define TEXT_X        (TEXT_ICON_W + TEXT_ICON_GAP)
@@ -2209,10 +2222,12 @@ _Static_assert(TEXT_FIT_LARGE_L1 == (PANEL_WIDTH - TEXT_X2) / FONT_SONG_LARGE_AD
 _Static_assert(TEXT_X + TEXT_FIT_LARGE_L0 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 0 on the panel");
 _Static_assert(TEXT_X2 + TEXT_FIT_LARGE_L1 * FONT_SONG_LARGE_ADV <= PANEL_WIDTH, "Large's line 1 on the panel");
 _Static_assert(LCD_FONT_SONG_LARGE_H + 1 == TEXT_LINE_H, "Large's cell is Cozette's 14 rows, the lines a row apart");
-_Static_assert(TEXT_Y + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT && TEXT_Y + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT,
-               "Large's lines on the panel");
-_Static_assert(TEXT_Y + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H < CLOCK_Y && TEXT_Y + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H < CLOCK_Y,
-               "and in the band, its gap row kept");
+#define DL_TEXT_ON_PANEL(text_y) \
+    ((text_y) + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT && (text_y) + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H <= PANEL_HEIGHT)
+#define DL_TEXT_ABOVE_CLOCK(text_y, clock_y) \
+    ((text_y) + TEXT_LINE_H + LCD_FONT_SONG_LARGE_H < (clock_y) && (text_y) + TEXT_FONT_DY + LCD_FONT_SONG_LARGE_H < (clock_y))
+_Static_assert(DL_TEXT_ON_PANEL(DL_DEF_TEXT_Y), "Large's lines on the panel");
+_Static_assert(DL_TEXT_ABOVE_CLOCK(DL_DEF_TEXT_Y, DL_DEF_CLOCK_Y), "and in the band, its gap row kept");
 
 // Blank after this long with no update. Without it the panel would happily show
 // last night's track forever if the host agent dies, the machine sleeps, or the
@@ -3034,7 +3049,7 @@ static void residual_step(bool *blocked, uint32_t *since) {
         case PO_RES_LOGO_OS:
             *blocked = false;
             logo_os_stale = false;
-            lcd_draw_flash_image(os_logo_id(), 0, 0);
+            lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
             return;
         case PO_RES_LOGO_CONN:
             *blocked = false;
@@ -3721,7 +3736,7 @@ void display_housekeeping_task(void) {
          * a tick, in this owner's turn, never over another owner's page. */
         if (logo_os_stale) {
             logo_os_stale = false;
-            lcd_draw_flash_image(os_logo_id(), 0, 0);
+            lcd_draw_flash_image(os_logo_id(), OS_LOGO_X, OS_LOGO_Y);
         } else if (logo_conn_stale) {
             logo_conn_stale = false;
             draw_conn_row();
@@ -3901,3 +3916,31 @@ uint8_t display_queue_depths(void) {
 }
 #endif
 bool display_menu_sleep_blocked(void) { return po_sleep_blocked(); }
+
+/* --- The layout (display_layout.h, M1) ----------------------------------------- */
+
+#ifndef DISPLAY_LAYOUT_CONST
+display_layout_t display_layout = DISPLAY_LAYOUT_DEFAULT;
+
+/* Every band invariant above, for a layout that was not compiled in, plus the
+ * stacking this phase keeps: the OS logo and the transport strip above the
+ * text band, then the clock, the lock row and the battery row in that order.
+ * A later phase may relax the order; it must not relax a fit. */
+bool display_layout_valid(const display_layout_t *l) {
+    if (!l) return false;
+    if (l->os_x + 24u > PANEL_WIDTH || l->os_y + 24u > PANEL_HEIGHT) return false;
+    if (l->conn_x + CONN_ICON_W + 1u + CONN_NUM_W + 1u > PANEL_WIDTH) return false;
+    if (l->conn_y + CONN_ICON_H > PANEL_HEIGHT) return false;
+    if (l->os_y + 24u > l->text_y || l->conn_y + CONN_ICON_H > l->text_y) return false;
+    /* Side by side, the logo and the strip (with its digit) must not meet. */
+    bool rows_meet = l->os_y < l->conn_y + CONN_ICON_H && l->conn_y < l->os_y + 24u;
+    bool cols_meet = l->os_x < l->conn_x + CONN_ICON_W + 1u + CONN_NUM_W + 1u && l->conn_x < l->os_x + 24u;
+    if (rows_meet && cols_meet) return false;
+    if (!DL_TEXT_ON_PANEL(l->text_y) || !DL_TEXT_ABOVE_CLOCK(l->text_y, l->clock_y)) return false;
+    if (!DL_CLOCK_ABOVE_LOCK(l->clock_y, l->lock_y)) return false;
+    if (l->status_y < l->lock_y || !DL_PADLOCK_FITS(l->lock_y, l->status_y)) return false;
+    if (!DL_STATUS_FITS(l->status_y)) return false;
+    if (!DL_LOCK_CELLS_FIT(l->lock_y, l->status_y) || !DL_LOCK_INK_FITS(l->lock_y, l->status_y)) return false;
+    return true;
+}
+#endif /* DISPLAY_LAYOUT_CONST */
